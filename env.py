@@ -7,7 +7,7 @@ import time
 import json
 
 import multiprocessing import Semaphore, Queue
-from multriprocessing.shared_memory import SharedMemory
+from multiprocessing.shared_memory import SharedMemory
 
 from shared_state import (create_shared_memory, read_snapshot, write_snapshot, start_ipc_manager, SharedStateSnapshot)
 

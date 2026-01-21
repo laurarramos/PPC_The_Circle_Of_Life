@@ -1,15 +1,27 @@
-import os
-import time
-import socket
-import json
+from __future__ import annotations
 
-from multiprocessing import Semaphore
+import json
+import os
+import socket
+import time
+from dataclasses import dataclass
+from typing import Any, Dict
+
 from multiprocessing.shared_memory import SharedMemory
 
 from shared_state import (attach_shared_memory, read_snapshot, write_snapshot, connect_ipc_manager, get_ipc_handles_from_manager, SharedStateSnapshot)
 
+# Config 
+ENV_HOST = 'localhost'
+ENV_PORT = 1789
+
+TICK_SLEEP_DEFAULT = 0.2  
+INITIAL_ENERGY = 100.0
+ENERGY_GAIN_FROM_GRASS = 10.0
+REPRODUCTION_COST = 5.0
 
 
+@dataclass
 class PreyState:
     """
     Représente l'état interne d'une proie.
@@ -19,7 +31,7 @@ class PreyState:
     - les références vers les mécanismes IPC (mémoire partagée, sémaphores, socket) nécessaires pour interagir avec le processus environnement.
     """
 
-    def __init__(self, pid: int, shm: SharedState, sem_mutex: Semaphore, sem_grass: Semaphore, sem_prey: Semaphore, socket: socket.socket, energy: float = 100.0, active: bool = True) -> None:
+    def __init__(self, pid: int, shm: SharedState, sem_mutex: Any, sem_grass: Any, sem_prey: Any, socket: socket.socket, energy: float = INITIAL_ENERGY, active: bool = True, has_prey_token: bool = False) -> None:
         """
         Initialise l'état d'une proie.
 
@@ -32,6 +44,7 @@ class PreyState:
             socket: Socket de communication avec le processus environnement.
             energy: Énergie initiale de la proie.
             active: État initial (actif/passif).
+            has_prey_token: Indicateur si cette proie a déposé 1 jeton dans sem_prey
         """
         self.pid = pid
         self.energy = energy
