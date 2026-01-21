@@ -1,3 +1,4 @@
+import cmd
 import time
 import sys
 from typing import Any, Optional, Dict
@@ -75,7 +76,26 @@ def ui_loop(state: DisplayState) -> None:
     - rafraîchit l'affichage périodiquement,
     - envoie les commandes correspondantes à env via la file de messages.
     """
-    pass
+    while state.running:
+        # 1. Récupère et traite les messages de env
+        poll_env_messages(state)
+
+        # 2. Lit et traite l'entrée utilisateur (non bloquante)
+        user_cmd = read_user_command()
+        if user_cmd:
+            command_msg = parse_command(user_cmd)
+            if command_msg:
+                send_command_to_env(state, command_msg)
+            if user_cmd.strip().lower() == "stop":
+                state.running = False
+
+        # 3. Rafraîchit l'affichage si nécessaire
+        now = time.time()
+        if should_render(state, now):
+            render(state)
+            state.last_render_time = now
+
+        time.sleep(0.1)
 
 
 def poll_env_messages(state: DisplayState) -> None:
@@ -85,10 +105,15 @@ def poll_env_messages(state: DisplayState) -> None:
 
     Met à jour l'état interne (last_snapshot) lorsque des status sont reçus.
     """
-    pass
+    while True:
+        try:
+            msg = state.mq_from_env.get_nowait() #Non bloquant
+            handle_env_message(state, msg)
+        except Exception: # queue vide
+            break  
 
 
-def handle_env_message(state: DisplayState, msg: dict) -> None:
+def handle_env_message(state: DisplayState, msg: dict) -> None: #à revoir en fonction de besoins 
     """
     Traite un message reçu depuis env.
 
@@ -100,7 +125,12 @@ def handle_env_message(state: DisplayState, msg: dict) -> None:
     Args:
         msg: Message reçu depuis env (format dict).
     """
-    pass
+    if "snapshot" in msg:
+        state.last_snapshot = msg["snapshot"]
+    elif "event" in msg:
+        print(f"[   ENV EVENT] {msg['event']}")
+    elif "error" in msg:
+        print(f"[   ENV ERROR] {msg['error']}")
 
 
 def read_user_command() -> Optional[str]:
@@ -110,10 +140,13 @@ def read_user_command() -> Optional[str]:
     Returns:
         La commande saisie (str) ou None si aucune entrée.
     """
-    pass
+    import select
+    if select.select([sys.stdin], [], [], 0.0)[0]:
+        return sys.stdin.readline().strip()     
+    return None
 
 
-def parse_command(cmd: str) -> Optional[dict]:
+def parse_command(cmd: str) -> Optional[dict]: #à revoir 
     """
     Analyse une commande textuelle et la convertit en message de commande pour env.
 
@@ -126,8 +159,20 @@ def parse_command(cmd: str) -> Optional[dict]:
     Returns:
         Un dict représentant la commande à envoyer à env, ou None si invalide.
     """
-    pass
-
+    tokens = cmd.strip().split()
+    if not tokens:
+        return None
+    
+    if tokens[0].lower() == "stop":
+        return {"cmd": "STOP"}
+    elif tokens[0].lower() == "status":
+        return {"cmd": "STATUS"}
+    
+    elif tokens[0].lower() == "set" and len(tokens) == 3:
+        param, value = tokens[1], tokens[2]
+        if value.isdigit():
+            return {"cmd": "SET", "param": param, "value": int(value)}
+    return None
 
 def send_command_to_env(state: DisplayState, command_msg: dict) -> None:
     """
@@ -136,7 +181,7 @@ def send_command_to_env(state: DisplayState, command_msg: dict) -> None:
     Args:
         command_msg: Dictionnaire représentant la commande (ex: {"cmd": "SET", ...}).
     """
-    pass
+    state
 
 
 def should_render(state: DisplayState, now: float) -> bool:
@@ -156,21 +201,31 @@ def render(state: DisplayState) -> None:
     """
     Affiche l'état courant de la simulation à partir de `last_snapshot`.
     """
-    pass
+    if state.last_snapshot is None:
+        print("[Waiting for snapshot...]")
+    else:
+        print(format_snapshot(state.last_snapshot))    
 
 
 def format_snapshot(snapshot: dict) -> str:
     """
     Formate un instantané (snapshot) en chaîne lisible pour la console.
     """
-    pass
+    lines = [
+        f"Grass: {snapshot.get('grass', '?')}",
+        f"Preys: {snapshot.get('nb_preys', '?')}",
+        f"Predators: {snapshot.get('nb_predators', '?')}",
+        f"Drought: {snapshot.get('drought', False)}"
+    ]
+    return "\n".join(lines)
 
 
 def request_stop(state: DisplayState) -> None:
     """
     Déclenche l'arrêt côté display : envoie STOP à env et quitte la boucle UI.
     """
-    pass
+    send_command_to_env(state, {"cmd": "STOP"})
+    state.running = False
 
 
 def cleanup(state: DisplayState) -> None:
@@ -180,7 +235,7 @@ def cleanup(state: DisplayState) -> None:
     (Avec un manager, on se contente généralement de quitter proprement.
     Les queues/manager seront arrêtés côté env.)
     """
-    pass
+    print("[Display] Exiting cleanly...")
 
 
 if __name__ == "__main__":

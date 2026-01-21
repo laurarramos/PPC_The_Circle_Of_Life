@@ -4,8 +4,7 @@ import threading
 import socket
 import signal
 import time
-
-import multiprocessing import Semaphore, Queue
+from multiprocessing import Semaphore, Queue
 from multiprocessing.shared_memory import SharedMemory
 
 from shared_state import (
