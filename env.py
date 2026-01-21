@@ -1,119 +1,157 @@
 import os
 import random
-import threading 
+import threading
 import socket
 import signal
 import time
-import json
 
 import multiprocessing import Semaphore, Queue
 from multiprocessing.shared_memory import SharedMemory
 
-from shared_state import (create_shared_memory, read_snapshot, write_snapshot, start_ipc_manager, SharedStateSnapshot)
+from shared_state import (
+    create_shared_memory,
+    read_snapshot,
+    write_snapshot,
+)
 
-#structure représntation population
-class Population:
+HOST = "localhost"
+PORT = 1789
 
-    def __init__(self, name, size, energy, is_active):
-        self.name = name
-        self.size = size
-        self.energy = energy 
-        self.is_active = is_active
-
-
-#structure environnement 
 
 class EnvProcess:
     def __init__(self):
-        self.serve = True #Variable de contrôle boucle principale
-        self.shared_state = SharedState() #état global partagé (données que les autres processus peuvent consulter et modifier)
+        self.serve = True
+
+        # Shared memory
+        self.shm = create_shared_memory()
+        self.shared_state = read_snapshot(self.shm)
+
+        # Semaphores
         self.sem_mutex = Semaphore(1)
-        self.sem_grass = Semaphore(self.shared_state.grass)  # Sémaphore nb herbe
-        self.sem_prey = Semaphore(0)  # Sémaphore nb proies actives
+        self.sem_grass = Semaphore(self.shared_state.grass)
+        self.sem_prey = Semaphore(0)
+        self.sem_predator = Semaphore(0)
+
+        # Socket
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server_socket.bind(('localhost', 1789))
-        self.server_socket.listen(2) # listen(n) n=nb max de connexions en attente
-        self.message_queue = Queue() #communication avec display process 
+        self.server_socket.bind((HOST, PORT))
+        self.server_socket.listen()
 
+        # Display communication
+        self.message_queue = Queue()
 
-    def start (self):
-        # Lance les threads pour gérer les connexions à la socket et les signaux 
-        connection_thread = threading.Thread(target=self.handle_connections)
-        signal_thread = threading.Thread(target=self.handle_signals)
-        
-        connection_thread.start()
-        signal_thread.start()
+    # =========================
+    # Main loop
+    # =========================
+    def start(self):
+        signal.signal(signal.SIGUSR1, self.drought_handler)
 
-        #planifie une sécheresse aléatoire 
+        threading.Thread(
+            target=self.handle_connections,
+            daemon=True
+        ).start()
+
         self.schedule_random_drought()
 
-        connection_thread.join()
-        signal_thread.join()
+        while self.serve:
+            time.sleep(1)
 
-        self.cleanup() #ferme les connexions et libère les ressources partagées
+        self.cleanup()
 
+    # =========================
+    # Drought
+    # =========================
     def schedule_random_drought(self):
-        #Génère un délai aléatoire entre 15 et 60 secondes
-        delay_seconds = random.randint(15, 60)
-
-        drought_timer = threading.Timer(delay_seconds, self.trigger_drought)
-        drought_timer.start()
+        delay = random.randint(15, 60)
+        threading.Timer(delay, self.trigger_drought).start()
 
     def trigger_drought(self):
         if self.serve:
-            os.kill(os.getpid(), signal.SIGUSR1)  # Envoyer le signal SIGUSR1
-            
-    def handle_signals(self):
-        def drought_handler(signum, frame):
-            with self.sem_mutex:
-                self.shared_state.drought = True
-                self.shared_state.grass *= 0.5
-                if self.serve:
-                    self.schedule_random_drought()  # Planifier une nouvelle sécheresse
+            os.kill(os.getpid(), signal.SIGUSR1)
 
-        signal.signal(signal.SIGUSR1, drought_handler)
+    def drought_handler(self, signum, frame):
+        with self.sem_mutex:
+            old = self.shared_state.grass
+            new = old // 2
+            delta = old - new
 
-        while self.serve:
-            signal.pause()  # Attend un signal
-    
+            self.shared_state.grass = new
+            self.shared_state.drought = True
+            write_snapshot(self.shm, self.shared_state)
+
+        # retirer physiquement l’herbe
+        for _ in range(delta):
+            self.sem_grass.acquire()
+
+        self.schedule_random_drought()
+
+    # =========================
+    # Socket handling
+    # =========================
     def handle_connections(self):
         while self.serve:
-            client_socket, addr = self.server_socket.accept()
-            self.process_client_message(client_socket, addr)
-    
-    def process_client_message(self, client_socket, addr):
-            with client_socket:
-                data = client_socket.recv(1024).decode()
-                if data == "stop":
-                    self.serve = False  # Arrêter le serveur
-                elif data == "je mange":
-                    self.update_grass(-1)  # Décrémenter l'herbe
-                elif data == "je meurs":
-                    self.update_population(-1)  # Décrémenter la population
-                elif data == "je me reproduis":
-                    self.update_population(1)  # Incrémenter la population
+            client, addr = self.server_socket.accept()
+            threading.Thread(
+                target=self.process_client_message,
+                args=(client,),
+                daemon=True
+            ).start()
 
+    def process_client_message(self, client_socket):
+        with client_socket:
+            data = client_socket.recv(1024).decode().strip()
 
+            if data == "stop":
+                self.serve = False
 
-        
-    
+            elif data == "eat_grass":
+                self.handle_prey_eat()
 
-    def update_grass(self, delta):
-    #delta = variation de l'herbe
+            elif data == "eat_prey":
+                self.handle_predator_eat()
+
+            elif data == "prey_birth":
+                self.update_preys(+1)
+
+            elif data == "prey_death":
+                self.update_preys(-1)
+
+            elif data == "predator_birth":
+                self.update_predators(+1)
+
+            elif data == "predator_death":
+                self.update_predators(-1)
+
+    # =========================
+    # World rules
+    # =========================
+    def handle_prey_eat(self):
+        self.sem_grass.acquire()  # bloque s’il n’y a plus d’herbe
+
         with self.sem_mutex:
-            self.shared_state.grass += delta
-            self.sem_grass.release() if delta > 0 else  None #Met à jour le sémaphore herbe
-    
-    def update_populations(self, delta):
+            self.shared_state.grass -= 1
+            self.sem_prey.release()  # devient proie active
+            write_snapshot(self.shm, self.shared_state)
+
+    def handle_predator_eat(self):
+        self.sem_prey.acquire()  # bloque s’il n’y a pas de proie active
+
+        with self.sem_mutex:
+            self.shared_state.nb_preys -= 1
+            write_snapshot(self.shm, self.shared_state)
+
+    def update_preys(self, delta):
         with self.sem_mutex:
             self.shared_state.nb_preys += delta
-            if delta > 0:
-                self.sem_prey.release() #Ajouter une proie active
-            else:
-                self.sem_prey.acquire(blocking = False) #Retirer une proie active
+            write_snapshot(self.shm, self.shared_state)
+
+    def update_predators(self, delta):
+        with self.sem_mutex:
+            self.shared_state.nb_predators += delta
+            write_snapshot(self.shm, self.shared_state)
+
+    # =========================
+    # Cleanup
+    # =========================
     def cleanup(self):
         self.server_socket.close()
-
-
-if __name__ == "__main__":
-    main()
