@@ -1,11 +1,16 @@
 import threading 
 import socket
 import signal
-import multiprocessing
-from multiprocessing import shared_memory, Semaphore, Queue 
+import time
+import json
+
+import multiprocessing import Semaphore, Queue
+from multriprocessing.shared_memory import SharedMemory
+
+from shared_state import (create_shared_memory, read_snapshot, write_snapshot, start_ipc_manager, SharedStateSnapshot)
 
 #structure représntation population
-Class Population:
+class Population:
 
     def __init__(self, name, size, energy, is_active):
         self.name = name
@@ -15,7 +20,7 @@ Class Population:
 
 
 #structure état global
-Class GlobalState:
+class GlobalState:
 
     def __init__(self):
         self.nb_preys = 0
@@ -27,7 +32,7 @@ Class GlobalState:
 
 #structure environnement 
 
-Class EnvProcess:
+class EnvProcess:
     def __init__(self):
         self.serve = True #Variable de contrôle boucle principale
         self.shared_state = SharedState() #état global partagé (données que les autres processus peuvent consulter et modifier)
