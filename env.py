@@ -18,10 +18,18 @@ PORT = 1789
 
 
 class EnvProcess:
+    """
+    Représente l'état global de l'environnement (populations, herbe, sécheresse,...).
+    
+    - reçoit des commandes utilisateur du display via une file de message
+    - ouvre un serveur socket auqelle les populations se connectent pour interagir avec l'environnement lors d'événements (manger, naissances, morts)
+    - maintient l'état partagé dans une mémoire partagée
+    - gère les sémaphores pour la synchronisation des accès aux ressources partagées 
+    """
     def __init__(self):
         self.serve = True
 
-        # Shared memory
+        # Shared memory --> changer pour utiliser un Manager  
         self.shm = create_shared_memory()
         self.shared_state = read_snapshot(self.shm)
 
@@ -39,9 +47,7 @@ class EnvProcess:
         # Display communication
         self.message_queue = Queue()
 
-    # =========================
-    # Main loop
-    # =========================
+
     def start(self):
         signal.signal(signal.SIGUSR1, self.drought_handler)
 
@@ -57,14 +63,19 @@ class EnvProcess:
 
         self.cleanup()
 
-    # =========================
-    # Drought
-    # =========================
+ 
     def schedule_random_drought(self):
+        """
+        Planifie un délai aléatoire entre 15 et 60 secondes, puis envoie un signal pour déclencher une sécheresse quand ce délai est écoulé.
+        """
         delay = random.randint(15, 60)
         threading.Timer(delay, self.trigger_drought).start()
 
     def trigger_drought(self):
+        """
+        Déclenche une sécheresse en envoyant un signal SIGUSR1.
+    
+        """
         if self.serve:
             os.kill(os.getpid(), signal.SIGUSR1)
 
@@ -84,9 +95,7 @@ class EnvProcess:
 
         self.schedule_random_drought()
 
-    # =========================
-    # Socket handling
-    # =========================
+
     def handle_connections(self):
         while self.serve:
             client, addr = self.server_socket.accept()
@@ -121,9 +130,6 @@ class EnvProcess:
             elif data == "predator_death":
                 self.update_predators(-1)
 
-    # =========================
-    # World rules
-    # =========================
     def handle_prey_eat(self):
         self.sem_grass.acquire()  # bloque s’il n’y a plus d’herbe
 
@@ -149,8 +155,6 @@ class EnvProcess:
             self.shared_state.nb_predators += delta
             write_snapshot(self.shm, self.shared_state)
 
-    # =========================
-    # Cleanup
-    # =========================
+
     def cleanup(self):
         self.server_socket.close()

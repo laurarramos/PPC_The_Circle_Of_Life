@@ -8,13 +8,8 @@ from shared_state import connect_ipc_manager, get_ipc_handles_from_manager
 
 class DisplayState:
     """
-    Représente l'état interne du processus d'affichage (display).
+    Gère l'affichage de l'état global de la simulation et la communication avec l'utilisateur
 
-    Le display :
-    - reçoit des instantanés (status) depuis env via une file de messages,
-    - envoie des commandes utilisateur à env via une autre file de messages,
-    - maintient un dernier état reçu pour l'affichage,
-    - gère une boucle d'interface en temps réel.
     """
 
     def __init__(self, mq_to_env: Any, mq_from_env: Any, refresh_period: float = 0.5) -> None:
@@ -181,7 +176,7 @@ def send_command_to_env(state: DisplayState, command_msg: dict) -> None:
     Args:
         command_msg: Dictionnaire représentant la commande (ex: {"cmd": "SET", ...}).
     """
-    state
+    state.mq_to_env.put(command_msg)
 
 
 def should_render(state: DisplayState, now: float) -> bool:
