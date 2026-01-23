@@ -130,6 +130,8 @@ class EnvProcess:
             elif data == "predator_death":
                 self.update_predators(-1)
 
+            #ajouter message join 
+
     def handle_prey_eat(self):
         self.sem_grass.acquire()  # bloque s’il n’y a plus d’herbe
 

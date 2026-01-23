@@ -85,10 +85,7 @@ def ui_loop(state: DisplayState) -> None:
                 state.running = False
 
         # 3. Rafraîchit l'affichage si nécessaire
-        now = time.time()
-        if should_render(state, now):
-            render(state)
-            state.last_render_time = now
+
 
         time.sleep(0.1)
 
@@ -110,22 +107,11 @@ def poll_env_messages(state: DisplayState) -> None:
 
 def handle_env_message(state: DisplayState, msg: dict) -> None: #à revoir en fonction de besoins 
     """
-    Traite un message reçu depuis env.
-
-    Cas typiques :
-    - message contenant un instantané de l'état global (status),
-    - message d'information (ex: début/fin de sécheresse),
-    - message d'erreur ou de fin de simulation.
-
-    Args:
-        msg: Message reçu depuis env (format dict).
+    Traite les messages reçu depuis env.
     """
-    if "snapshot" in msg:
-        state.last_snapshot = msg["snapshot"]
-    elif "event" in msg:
-        print(f"[   ENV EVENT] {msg['event']}")
-    elif "error" in msg:
-        print(f"[   ENV ERROR] {msg['error']}")
+
+    pass
+
 
 
 def read_user_command() -> Optional[str]:
@@ -143,31 +129,10 @@ def read_user_command() -> Optional[str]:
 
 def parse_command(cmd: str) -> Optional[dict]: #à revoir 
     """
-    Analyse une commande textuelle et la convertit en message de commande pour env.
+    Analyse une commande textuelle et ce qu'il doit faire en fonction de cette commande.
 
-    Exemples :
-    - "status"
-    - "stop"
-    - "set H_prey 40"
-    - "set R_pred 80"
-
-    Returns:
-        Un dict représentant la commande à envoyer à env, ou None si invalide.
     """
-    tokens = cmd.strip().split()
-    if not tokens:
-        return None
-    
-    if tokens[0].lower() == "stop":
-        return {"cmd": "STOP"}
-    elif tokens[0].lower() == "status":
-        return {"cmd": "STATUS"}
-    
-    elif tokens[0].lower() == "set" and len(tokens) == 3:
-        param, value = tokens[1], tokens[2]
-        if value.isdigit():
-            return {"cmd": "SET", "param": param, "value": int(value)}
-    return None
+    pass 
 
 def send_command_to_env(state: DisplayState, command_msg: dict) -> None:
     """
@@ -177,42 +142,6 @@ def send_command_to_env(state: DisplayState, command_msg: dict) -> None:
         command_msg: Dictionnaire représentant la commande (ex: {"cmd": "SET", ...}).
     """
     state.mq_to_env.put(command_msg)
-
-
-def should_render(state: DisplayState, now: float) -> bool:
-    """
-    Indique s'il est temps de rafraîchir l'affichage en fonction de `refresh_period`.
-
-    Args:
-        now: Temps courant (timestamp).
-
-    Returns:
-        True si un rendu doit être effectué, False sinon.
-    """
-    return (now - state.last_render_time) >= state.refresh_period
-
-
-def render(state: DisplayState) -> None:
-    """
-    Affiche l'état courant de la simulation à partir de `last_snapshot`.
-    """
-    if state.last_snapshot is None:
-        print("[Waiting for snapshot...]")
-    else:
-        print(format_snapshot(state.last_snapshot))    
-
-
-def format_snapshot(snapshot: dict) -> str:
-    """
-    Formate un instantané (snapshot) en chaîne lisible pour la console.
-    """
-    lines = [
-        f"Grass: {snapshot.get('grass', '?')}",
-        f"Preys: {snapshot.get('nb_preys', '?')}",
-        f"Predators: {snapshot.get('nb_predators', '?')}",
-        f"Drought: {snapshot.get('drought', False)}"
-    ]
-    return "\n".join(lines)
 
 
 def request_stop(state: DisplayState) -> None:
