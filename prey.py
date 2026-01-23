@@ -6,8 +6,7 @@ import socket
 import time
 from dataclasses import dataclass
 from typing import Any, Dict
-
-from multiprocessing.shared_memory import SharedMemory
+from multiprocessing.managers import BaseManager
 
 
 # Config 
@@ -29,7 +28,7 @@ class PreyState:
     - les références vers les mécanismes IPC (mémoire partagée, sémaphores, socket) nécessaires pour interagir avec le processus environnement.
     """
 
-    def __init__(self, pid: int, shm: SharedState, sem_mutex: Any, sem_grass: Any, sem_prey: Any, socket: socket.socket, energy: float = INITIAL_ENERGY, active: bool = True) -> None:
+    def __init__(self, pid: int, shm: , sem_mutex: Any, sem_grass: Any, sem_prey: Any, socket: socket.socket, energy: float = INITIAL_ENERGY, active: bool = True) -> None:
         """
         Initialise l'état d'une proie.
 
@@ -95,11 +94,11 @@ def init_ipc() -> PreyState:
     pid = os.getpid()
 
     # Mémoire partagée (crée par env)
-    shm = attach_shared_memory()
+    shm = 
 
     # Manager IPC (démarré par env)
-    mgr = connect_ipc_manager()
-    sem_mutex, sem_grass, sem_prey, q_to_env, q_from_env = get_ipc_handles_from_manager(mgr)
+    mgr = 
+    sem_mutex, sem_grass, sem_prey, q_to_env, q_from_env = 
     # prey n'utilise que sem_mutex, sem_grass et sem_prey
     _ = q_to_env, q_from_env
 
@@ -123,14 +122,14 @@ def join_simulation(state: PreyState) -> None:
 # Lecture paramètres globaux
 def read_global_parameters(state: PreyState) -> Dict[str, Any]:
     state.sem_mutex.acquire()
-    snap: SharedStateSnapshot = read_snapshot(state.shm)
+    # snap: SharedStateSnapshot = read_snapshot(state.shm)
     state.sem_mutex.release()
 
     return {
-        "running": snap.running,
-        "H_prey": snap.H_prey,
-        "R_prey": snap.R_prey,
-        "energy_decay": snap.energy_decay,
+        "running": ,
+        "H_prey": ,
+        "R_prey": ,
+        "energy_decay":,
     }
 
 
