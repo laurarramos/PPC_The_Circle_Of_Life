@@ -6,48 +6,48 @@ import time
 import socket
 from dataclasses import dataclass
 from typing import Any, Dict
-
-from multiprocessing.shared_memory import SharedMemory
+from multiprocessing.managers import BaseManager
 
 
 # Config 
 ENV_HOST = 'localhost'
 ENV_PORT = 1789
 
+MANAGER_HOST = 'localhost'
+MANAGER_PORT = 50000
+AUTHKEY = b"llave"
+
 TICK_SLEEP_DEFAULT = 0.2  # secondes
 INITIAL_ENERGY = 100.0
 ENERGY_GAIN_FROM_PREY = 20.0
 REPRODUCTION_COST = 10.0
 
+# Manager client
+class EnvManager(BaseManager):
+    pass
 
+EnvManager.register("get_state")
+EnvManager.register("get_sem_mutex")
+EnvManager.register("get_sem_prey")
+
+# État local du prédateur
 class PredatorState:
     """
     Représente l'état interne d'un prédateur.
-
-    Cette classe regroupe :
-    - l'état "métier" de l'individu (énergie, actif/passif),
-    - les références vers les mécanismes IPC (mémoire partagée, sémaphores, socket) nécessaires pour interagir avec le processus environnement.
+    - état local : énergie, actif/passif
+    - IPC : state,  sem_mutex, sem_prey, socket
     """
 
-    def __init__(self, pid: int, shm: SharedState, sem_mutex: Any, sem_prey: Any, socket: socket.socket, energy: float = INITIAL_ENERGY, active: bool = True) -> None:
+    def __init__(self, pid: int, state: Any, sem_mutex: Any, sem_prey: Any, socket: socket.socket, energy: float = INITIAL_ENERGY, active: bool = True) -> None:
         """
         Initialise l'état d'un prédateur.
-
-        Args:
-            pid: Identifiant du processus prédateur.
-            shm: Référence vers la mémoire partagée.
-            sem_mutex: Sémaphore binaire protégeant l'accès à la mémoire partagée.
-            sem_prey: Sémaphore (compteur) modélisant le nombre de proies actives disponibles.
-            socket: Socket de communication avec le processus environnement.
-            energy: Énergie initiale du prédateur.
-            active: État initial (actif/passif).
         """
         self.pid = pid
         self.energy = energy
         self.active = active
 
         # Références IPC
-        self.shm = shm
+        self.state = state
         self.sem_mutex = sem_mutex
         self.sem_prey = sem_prey
         self.socket = socket
@@ -59,7 +59,7 @@ def send_json(sock: socket.socket, message: Dict[str, Any]) -> None:
     """
     Envoie un message JSON délimité par '\\n' (NDJSON).
     """
-    data = (json.dumps(payload) + "\n").encode("utf-8")
+    data = (json.dumps(message) + "\n").encode("utf-8")
     sock.sendall(data)
 
 # Point d'entrée
@@ -81,43 +81,43 @@ def init_ipc() -> PredatorState:
     """
     pid = os.getpid()
 
-    # Mémoire partagée (crée par env)
-    shm = attach_shared_memory()
+    # Connexion au manager (env héberge l'état global)
+    mgr = EnvManager(address=(MANAGER_HOST, MANAGER_PORT), authkey=AUTHKEY)
+    mgr.connect()
 
-    # Manager IPC (crée par env)
-    mgr = connect_ipc_manager()
-    sem_mutex, sem_grass, sem_prey, q_to_env, q_from_env = get_ipc_handles_from_manager(mgr)
-    # predator n'utilise que sem_mutex et sem_prey
-    _ = sem_grass, q_to_env, q_from_env
+    shared_state = mgr.get_state()
+    sem_mutex = mgr.get_sem_mutex()
+    sem_prey = mgr.get_sem_prey()  
 
-    # Socket vers env
+    # Socket vers env (uniquement pour JOIN)
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.connect((ENV_HOST, ENV_PORT))
 
-    return PredatorState(pid=pid, shm=shm, sem_mutex=sem_mutex, sem_prey=sem_prey, socket=sock, energy=INITIAL_ENERGY, active=True)
+    return PredatorState(pid=pid, state=shared_state, sem_mutex=sem_mutex, sem_prey=sem_prey, socket=sock, energy=INITIAL_ENERGY, active=True)
 
 
-# Enregistrement 
+# Join (socket)
 
 def join_simulation(state: PredatorState) -> None:
     """
-    Signale au processus environnement l'arrivée d'un nouveau prédateur.
-    Envoie un message de type join contenant l'identifiant du processus.
+    Signale à env l'arrivée d'un prédateur (socket)
     """
-    send_json(state.socket, {"type": "join", "role": "predator", "pid": state.pid})
+    send_json(state.socket, {"role": "predator", "pid": state.pid})
+
+    # à voir si c'est env qui modifie la mémoire partagée ou le prédateur
 
 
 # Lecture de paramètres globaux
 def read_global_parameters(state: PredatorState) -> Dict[str, Any]:
     state.sem_mutex.acquire()
-    snap: SharedStateSnapshot = read_snapshot(state.shm)
+    
     state.sem_mutex.release()
 
     return {
-        "running": snap.running,
-        "H_pred": snap.H_pred,
-        "R_pred": snap.R_pred,
-        "energy_decay": snap.energy_decay,
+        "running": ,
+        "H_pred": ,
+        "R_pred": ,
+        "energy_decay": ,
     }
 
 # Boucle de simulation
@@ -166,7 +166,7 @@ def update_activity_state(state: PredatorState, activation_threshold: float) -> 
 
 
 # Chasse (alimentation)
-def try_hunt(state: PredatorState) -> bool:
+def hunt(state: PredatorState) -> bool:
     """
     Tente de chasser une proie active.
     Cette fonction essaie d'acquérir le sémaphore représentant les proies actives disponibles.
@@ -226,6 +226,7 @@ def notify_death(state: PredatorState) -> None:
     Informe le processus environnement de la mort du prédateur afin que la population globale soit mise à jour.
     """
     send_json(state.socket, {"type": "death", "role": "predator", "pid": state.pid})
+    # à vérifier comment on fait
 
 # Utilitaires
 def sleep_tick() -> None:
