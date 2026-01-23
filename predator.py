@@ -9,7 +9,6 @@ from typing import Any, Dict
 
 from multiprocessing.shared_memory import SharedMemory
 
-from shared_state import (attach_shared_memory, read_snapshot, write_snapshot, connect_ipc_manager, get_ipc_handles_from_manager, SharedStateSnapshot)
 
 # Config 
 ENV_HOST = 'localhost'
@@ -20,7 +19,7 @@ INITIAL_ENERGY = 100.0
 ENERGY_GAIN_FROM_PREY = 20.0
 REPRODUCTION_COST = 10.0
 
-@dataclass
+
 class PredatorState:
     """
     Représente l'état interne d'un prédateur.

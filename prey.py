@@ -9,7 +9,6 @@ from typing import Any, Dict
 
 from multiprocessing.shared_memory import SharedMemory
 
-from shared_state import (attach_shared_memory, read_snapshot, write_snapshot, connect_ipc_manager, get_ipc_handles_from_manager, SharedStateSnapshot)
 
 # Config 
 ENV_HOST = 'localhost'
@@ -21,13 +20,12 @@ ENERGY_GAIN_FROM_GRASS = 10.0
 REPRODUCTION_COST = 5.0
 
 
-@dataclass
 class PreyState:
     """
     Représente l'état interne d'une proie.
 
     Cette classe regroupe :
-    - l'état "métier" de l'individu (énergie, actif/passif),
+    - l'état de l'individu (énergie, actif/passif),
     - les références vers les mécanismes IPC (mémoire partagée, sémaphores, socket) nécessaires pour interagir avec le processus environnement.
     """
 
@@ -44,13 +42,13 @@ class PreyState:
             socket: Socket de communication avec le processus environnement.
             energy: Énergie initiale de la proie.
             active: État initial (actif/passif).
-            has_prey_token: Indicateur si cette proie a déposé 1 jeton dans sem_prey
+            has_prey_token: Indicateur si cette proie a déposé 1 jeton dans sem_prey = s'il y a une nouvelle proie active et chassable.
         """
         self.pid = pid
         self.energy = energy
         self.active = active
 
-        # Indique si la proie a "déposé" un jeton dans sem_prey (proie active chassable).
+        # Indique si la proie a déposé un jeton dans sem_prey (proie active chassable).
         # Permet de garder la cohérence lors des transitions d'état ou de la mort.
         self.has_prey_token = False
 
@@ -284,6 +282,7 @@ def notify_death(state: PreyState) -> None:
     """
     withdraw_prey_token_if_needed(state)
     send_json(state.socket, {"type": "death", "role": "prey", "pid": state.pid})
+    # à modifier : c'est predateur qui modifie direct dans la mémoire partagée qu il a tué une proie
 
 # Utilitaires
 
