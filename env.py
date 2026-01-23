@@ -5,16 +5,31 @@ import socket
 import signal
 import time
 from multiprocessing import Semaphore, Queue
-from multiprocessing.shared_memory import SharedMemory
+from multiprocessing.managers import BaseManager
 
-from shared_state import (
-    create_shared_memory,
-    read_snapshot,
-    write_snapshot,
-)
 
 HOST = "localhost"
 PORT = 1789
+MANAGER_PORT = 50000
+AUTHKEY = b"llave"
+
+class SharedState:
+    """
+    Structure de données partagées entre les processus via mémoire partagée.
+    """
+    def __init__(self, grass, nb_preys, pid_preys_active, nb_predators, H, R, drought=False, energy_decay=1):
+        self.grass = grass
+        self.nb_preys = nb_preys
+        self.pid_preys_active = pid_preys_active
+        self.nb_predators = nb_predators
+        self.H = H
+        self.R = R
+        self.drought = drought
+        self.energy_decay = energy_decay
+    
+
+class EnvManager(BaseManager):
+    pass
 
 
 class EnvProcess:
@@ -28,16 +43,12 @@ class EnvProcess:
     """
     def __init__(self):
         self.serve = True
-
-        # Shared memory --> changer pour utiliser un Manager  
-        self.shm = create_shared_memory()
-        self.shared_state = read_snapshot(self.shm)
-
+        # Mémoire partagée
+        self.shared_state = SharedState(grass=100, nb_preys=0, pid_preys=[], nb_predators=0, pid_predators=[], H=5, R=2)
         # Semaphores
         self.sem_mutex = Semaphore(1)
         self.sem_grass = Semaphore(self.shared_state.grass)
         self.sem_prey = Semaphore(0)
-        self.sem_predator = Semaphore(0)
 
         # Socket
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -45,7 +56,11 @@ class EnvProcess:
         self.server_socket.listen()
 
         # Display communication
-        self.message_queue = Queue()
+        self.d_to_env = Queue()
+        self.env_to_d = Queue()
+
+        #Manager
+
 
 
     def start(self):
@@ -63,7 +78,19 @@ class EnvProcess:
 
         self.cleanup()
 
- 
+    def grass_growth(self):
+        """
+        Augmente la quantité d'herbe dans l'environnement.
+        """
+        #doit modifier sem_grass puis shared_state.grass
+        pass
+
+    def schedule_message_queue(self):
+        """
+        Envoie périodiquement l'état partagé vers le display via la file de messages.
+        """
+        pass 
+
     def schedule_random_drought(self):
         """
         Planifie un délai aléatoire entre 15 et 60 secondes, puis envoie un signal pour déclencher une sécheresse quand ce délai est écoulé.
@@ -105,57 +132,17 @@ class EnvProcess:
                 daemon=True
             ).start()
 
-    def process_client_message(self, client_socket):
+    def client_message(self, client_socket):
+        """
+        Met à jour les états partagés en fonction des messages écoutés dans la socket.
+        """
         with client_socket:
             data = client_socket.recv(1024).decode().strip()
 
-            if data == "stop":
-                self.serve = False
-
-            elif data == "eat_grass":
-                self.handle_prey_eat()
-
-            elif data == "eat_prey":
-                self.handle_predator_eat()
-
-            elif data == "prey_birth":
-                self.update_preys(+1)
-
-            elif data == "prey_death":
-                self.update_preys(-1)
-
-            elif data == "predator_birth":
-                self.update_predators(+1)
-
-            elif data == "predator_death":
-                self.update_predators(-1)
-
-            #ajouter message join 
-
-    def handle_prey_eat(self):
-        self.sem_grass.acquire()  # bloque s’il n’y a plus d’herbe
-
-        with self.sem_mutex:
-            self.shared_state.grass -= 1
-            self.sem_prey.release()  # devient proie active
-            write_snapshot(self.shm, self.shared_state)
-
-    def handle_predator_eat(self):
-        self.sem_prey.acquire()  # bloque s’il n’y a pas de proie active
-
-        with self.sem_mutex:
-            self.shared_state.nb_preys -= 1
-            write_snapshot(self.shm, self.shared_state)
-
-    def update_preys(self, delta):
-        with self.sem_mutex:
-            self.shared_state.nb_preys += delta
-            write_snapshot(self.shm, self.shared_state)
-
-    def update_predators(self, delta):
-        with self.sem_mutex:
-            self.shared_state.nb_predators += delta
-            write_snapshot(self.shm, self.shared_state)
+            if data.get("role")=="prey":
+                self.shared_state.nb_preys += 1
+            if data.get("role")=="predator":
+                self.shared_state.nb_predators += 1
 
 
     def cleanup(self):
