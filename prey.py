@@ -1,64 +1,32 @@
-from __future__ import annotations
-
-import json
 import os
-import socket
 import time
-from dataclasses import dataclass
-from typing import Any, Dict
+import socket
+import json
 from multiprocessing.managers import BaseManager
 
-
-# Config 
+# Config globale
 ENV_HOST = 'localhost'
 ENV_PORT = 1789
+MANAGER_HOST = 'localhost'
+MANAGER_PORT = 50000
+AUTHKEY = b"llave"
 
 TICK_SLEEP_DEFAULT = 0.2  
 INITIAL_ENERGY = 100.0
 ENERGY_GAIN_FROM_GRASS = 10.0
 REPRODUCTION_COST = 5.0
 
+# Manager client
+class EnvManager(BaseManager):
+    pass
 
-class PreyState:
-    """
-    Représente l'état interne d'une proie.
+EnvManager.register("get_state")
+EnvManager.register("get_sem_mutex")
+EnvManager.register("get_sem_grass")
+EnvManager.register("get_sem_prey")
 
-    Cette classe regroupe :
-    - l'état de l'individu (énergie, actif/passif),
-    - les références vers les mécanismes IPC (mémoire partagée, sémaphores, socket) nécessaires pour interagir avec le processus environnement.
-    """
 
-    def __init__(self, pid: int, shm: , sem_mutex: Any, sem_grass: Any, sem_prey: Any, socket: socket.socket, energy: float = INITIAL_ENERGY, active: bool = True) -> None:
-        """
-        Initialise l'état d'une proie.
-
-        Args:
-            pid: Identifiant du processus proie.
-            shm: Référence vers la mémoire partagée.
-            sem_mutex: Sémaphore binaire protégeant l'accès à la mémoire partagée.
-            sem_grass: Sémaphore (compteur) modélisant la quantité d'herbe disponible.
-            sem_prey: Sémaphore (compteur) modélisant le nombre de proies actives chassables.
-            socket: Socket de communication avec le processus environnement.
-            energy: Énergie initiale de la proie.
-            active: État initial (actif/passif).
-            has_prey_token: Indicateur si cette proie a déposé 1 jeton dans sem_prey = s'il y a une nouvelle proie active et chassable.
-        """
-        self.pid = pid
-        self.energy = energy
-        self.active = active
-
-        # Indique si la proie a déposé un jeton dans sem_prey (proie active chassable).
-        # Permet de garder la cohérence lors des transitions d'état ou de la mort.
-        self.has_prey_token = False
-
-        # IPC handles
-        self.shm = shm
-        self.sem_mutex = sem_mutex
-        self.sem_grass = sem_grass
-        self.sem_prey = sem_prey
-        self.socket = socket
-
-# Outils socket
+# Utilitaires
 def send_json(sock: socket.socket, message: Dict[str, Any]) -> None:
     """
     Envoie un message JSON terminé par un saut de ligne.
@@ -66,248 +34,130 @@ def send_json(sock: socket.socket, message: Dict[str, Any]) -> None:
     data = (json.dumps(message) + "\n").encode("utf-8")
     sock.sendall(data)
 
-
-# Point d'entrée
-def prey_main() -> None:
+def init_ipc() -> dict:
     """
-    Point d'entrée du processus proie.
-
-    Initialise les mécanismes de communication inter-processus, rejoint la simulation et exécute la boucle principale de la proie.
+    Initialise les connexions au manager et à la socket
     """
-    state = init_ipc()
-    join_simulation(state)
-    simulation_loop(state)
-    cleanup(state)
+    mgr = EnvManager(address=(MANAGER_HOST, MANAGER_PORT), authkey=AUTHKEY)
+    mgr.connect()
 
-
-# Initialisation IPC
-def init_ipc() -> PreyState:
-    """
-    Initialise et attache tous les mécanismes IPC nécessaires à la proie.
-
-    Cette fonction :
-    - attache la mémoire partagée,
-    - ouvre les sémaphores requis,
-    - établit la connexion socket avec le processus environnement,
-    - construit et retourne l'objet PreyState.
-    """
-    pid = os.getpid()
-
-    # Mémoire partagée (crée par env)
-    shm = 
-
-    # Manager IPC (démarré par env)
-    mgr = 
-    sem_mutex, sem_grass, sem_prey, q_to_env, q_from_env = 
-    # prey n'utilise que sem_mutex, sem_grass et sem_prey
-    _ = q_to_env, q_from_env
-
-    # Socket vers env
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.connect((ENV_HOST, ENV_PORT))
 
-    return PreyState(pid=pid, shm=shm, sem_mutex=sem_mutex, sem_grass=sem_grass, sem_prey=sem_prey, socket=sock, energy=INITIAL_ENERGY, active=True, has_prey_token=False)
-
-
-# Enregistrement
-def join_simulation(state: PreyState) -> None:
-    """
-    Signale au processus environnement l'arrivée d'une nouvelle proie.
-
-    Envoie un message de type JOIN (au minimum : rôle + pid).
-    """
-    send_json(state.socket, {"type": "join", "role": "prey", "pid": state.pid})
-
-
-# Lecture paramètres globaux
-def read_global_parameters(state: PreyState) -> Dict[str, Any]:
-    state.sem_mutex.acquire()
-    # snap: SharedStateSnapshot = read_snapshot(state.shm)
-    state.sem_mutex.release()
-
     return {
-        "running": ,
-        "H_prey": ,
-        "R_prey": ,
-        "energy_decay":,
+        "pid": os.getpid(),
+        "shared_state": mgr.get_shared_state(),
+        "sem_mutex": mgr.get_sem_mutex(),
+        "sem_grass": mgr.get_sem_grass(),
+        "sem_prey": mgr.get_sem_prey(),
+        "socket": sock,
     }
 
-
-# Boucle principale
-def simulation_loop(state: PreyState) -> None:
+# Logique fonctionnelle
+def update_visibility(state, h_threshold: float) -> None:
     """
-    Boucle principale de la simulation de la proie.
-
-    À chaque itération, la proie :
-    - met à jour son énergie,
-    - met à jour son état actif/passif (et sa "chassabilité"),
-    - tente de manger de l'herbe si elle est active,
-    - se reproduit si possible,
-    - meurt si son énergie devient négative, puis attend le prochain tick de simulation.
-
-    Remarque :
-        Seules les proies actives peuvent être prédatées (modélisé via sem_prey).
+    Gère l'état actif/passif et l'inscription dans la liste chassable
     """
-    while True:
-        params = read_global_parameters(state)
+    is_hungry = state["energy"] < h_threshold
 
-        if not params["running"]:
-            break
+    if is_hungry and not state["active"]:
+        # on vérouille manuellement l'accès à la mémoire partagée
+        state["sem_mutex"].acquire()
 
-        update_energy(state, params["energy_decay"])
-        update_activity_state(state, params["H_prey"])
+        # on effectue la modification via le proxy
+        pids = state["shared_state"].get("pid_preys_active", [])
+        pids.append(state["pid"])
+        state["shared_state"]["pid_preys_active"] = pids
 
-        if state.active:
-            deposit_prey_token_if_needed(state)
-            ate = try_eat_grass(state)
-            if ate:
-                consume_grass(state)
-        else:
-            withdraw_prey_token_if_needed(state)
+        # on libère le mutex
+        state["sem_mutex"].release()
 
+        # on signale qu'une proie est active et chassable
+        state["sem_prey"].release()
+        state["active"] = True
+    
+    elif not is_hungry and state["active"]:
+        withdraw_from_list(state)
 
-        if can_reproduce(state, params["R_prey"]):
-            reproduce(state)
-
-        if is_dead(state):
-            notify_death(state)
-            break
-
-        sleep_tick()
-
-# Logique de la proie
-def update_energy(state: PreyState, energy_decay: float) -> None:
+def withdraw_from_list(state) -> None:
     """
-    Met à jour l'énergie de la proie en appliquant la perte d'énergie liée à l'écoulement du temps (décroissance par tick).
+    retire la proie de la liste des cibles sans arrêter le processus
     """
-    state.energy -= energy_decay
+    if state["active"]:
+        state["sem_mutex"].acquire()
 
+        pids = state["shared_state"].get("pid_preys_active", [])
+        if state["pid"] in pids:
+            pids.remove(state["pid"])
+            state["shared_state"]["pid_preys_active"] = pids
 
-def update_activity_state(state: PreyState, activation_threshold: float) -> None:
+        state["sem_mutex"].release()
+
+        state["sem_prey"].acquire(blocking=False)
+        state["active"] = False
+
+def check_if_eaten(state) -> bool:
     """
-    Met à jour l'état actif/passif de la proie en fonction de son énergie et du seuil d'activation global.
-
-    Cette fonction gère également la cohérence du sémaphore `sem_prey` :
-    - si la proie devient active, elle "dépose" un jeton (release),
-    - si elle redevient passive, elle "retire" son jeton (acquire), afin de refléter le nombre de proies actives chassables.
-
-    Args:
-        activation_threshold: Seuil H au-dessous duquel l'individu devient actif.
+    vérifie dans la mémoire partagée si la proie a été mangée
     """
-    state.active = state.energy < activation_threshold
+    eaten = False
 
+    if state["active"]:
+        state["sem_mutex"].acquire()
+        pids = state["shared_state"].get("pid_preys_active", [])
 
-def deposit_prey_token_if_needed(state: PreyState) -> None:
+        if state["pid"] not in pids:
+            eaten = True
+        
+        state["sem_mutex"].release()
+    return eaten
+
+def main_loop(state) -> None:
     """
-    Si la proie devient active et n'a pas encore déposé de jeton, elle dépose 1 jeton dans sem_prey.
+    Boucle de simulation principale de la proie 
     """
-    if not state.has_prey_token:
-        state.sem_prey.release()
-        state.has_prey_token = True
+    alive = True
+
+    while alive:
+        params = state["shared_state"]
+        h_threshold = params.get("H")
+        r_threshold = params.get("R")
+        energy_decay = params.get("energy_decay")
+
+        state["energy"] -= energy_decay
+
+        update_visibility(state, h_threshold)
+
+        if state["active"]:
+            if state["sem_grass"].acquire(blocking=False):
+                state["energy"] += ENERGY_GAIN_FROM_GRASS
+        
+        if check_if_eaten(state):
+            alive = False
+            state["active"] = False
+        
+        if alive and state["energy"] > r_threshold:
+            # demande de reproduction
+            state["energy"] -= REPRODUCTION_COST
+            send_json(state["socket"], {"type": "reproduce", "role": "prey", "pid": state["pid"]})
+
+        if state["energy"] <= 0:
+            alive = False
+        
+        time.sleep(TICK_SLEEP_DEFAULT)
 
 
-def withdraw_prey_token_if_needed(state: PreyState) -> None:
+def cleanup(state) -> None:
     """
-    Si la proie devient passive et avait déposé un jeton, elle le retire de sem_prey.
+    Libère les ressources
     """
-    if state.has_prey_token:
-        state.sem_prey.acquire(blocking=False)
-        state.has_prey_token = False
-
-
-def try_eat_grass(state: PreyState) -> bool:
-    """
-    Tente de consommer de l'herbe.
-
-    Essaie d'acquérir `sem_grass` (portions d'herbe disponibles).
-    Si l'acquisition réussit, l'énergie de la proie peut être augmentée.
-
-    Returns:
-        True si de l'herbe a pu être consommée, False sinon.
-    """
-    return state.sem_grass.acquire(blocking=False)
-
-
-def consume_grass(state: PreyState) -> None:
-    """
-    Traite la consommation d'herbe par la proie.
-
-    Met à jour l'énergie de la proie et, si le modèle le prévoit, notifie le processus environnement (par exemple pour maintenir un compteur d'herbe dans la mémoire partagée à des fins d'affichage).
-    """
-    state.energy += ENERGY_GAIN_FROM_GRASS
-    send_json(state.socket, {"type": "eat_grass", "pid": state.pid})
-
-
-def can_reproduce(state: PreyState, reproduction_threshold: float) -> bool:
-    """
-    Détermine si la proie peut se reproduire.
-
-    La proie est reproductible si son énergie dépasse le seuil R.
-
-    Args:
-        reproduction_threshold: Seuil R de reproduction.
-
-    Returns:
-        True si la reproduction est possible, False sinon.
-    """
-    return state.energy > reproduction_threshold
-
-
-def reproduce(state: PreyState) -> None:
-    """
-    Signale au processus environnement une demande de reproduction de la proie.
-
-    L'environnement met à jour la population globale et applique, si besoin, une politique de création d'un nouvel individu (selon le design retenu).
-    """
-    state.energy -= REPRODUCTION_COST
-    send_json(state.socket, {"type": "reproduce", "role": "prey", "pid": state.pid})
-
-
-def is_dead(state: PreyState) -> bool:
-    """
-    Vérifie si la proie est morte.
-
-    La proie est considérée comme morte lorsque son énergie devient négative.
-
-    Returns:
-        True si la proie est morte, False sinon.
-    """
-    return state.energy < 0
-
-
-def notify_death(state: PreyState) -> None:
-    """
-    Informe le processus environnement de la mort de la proie afin que la population globale soit mise à jour (décrément du compteur global).
-    """
-    withdraw_prey_token_if_needed(state)
-    send_json(state.socket, {"type": "death", "role": "prey", "pid": state.pid})
-    # à modifier : c'est predateur qui modifie direct dans la mémoire partagée qu il a tué une proie
-
-# Utilitaires
-
-def cleanup(state: PreyState) -> None:
-    """
-    Libère proprement les ressources utilisées par la proie.
-
-    Ferme la connexion socket et détache/ferme les ressources IPC locales avant la terminaison du processus.
-
-    Remarque :
-        Si la proie meurt alors qu'elle est active, elle doit d'abord retirer son jeton de `sem_prey` pour rester cohérente.
-    """
-    state.socket.close()
-    state.shm.close()
-
-
-
-def sleep_tick() -> None:
-    """
-    Suspend l'exécution de la proie pendant une durée donnée afin de simuler l'écoulement du temps entre deux itérations de la simulation.
-
-    Args:
-        base_delay: Durée de base (en secondes) du tick.
-    """
-    time.sleep(TICK_SLEEP_DEFAULT)
+    withdraw_from_list(state)
+    state["socket"].close()
 
 # Lancement
 if __name__ == "__main__":
-    prey_main()
+    ipc = init_ipc()
+    state = {**ipc, "energy": INITIAL_ENERGY, "active": False}
+    send_json(state["socket"], {"type": "join", "role": "prey", "pid": state["pid"]})
+    main_loop(state)
+    cleanup(state)

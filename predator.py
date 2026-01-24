@@ -1,15 +1,10 @@
-from __future__ import annotations
-
-import json
 import os
 import time
 import socket
-from dataclasses import dataclass
-from typing import Any, Dict
+import json
 from multiprocessing.managers import BaseManager
 
-
-# Config 
+# Constantes globales 
 ENV_HOST = 'localhost'
 ENV_PORT = 1789
 
@@ -29,28 +24,6 @@ class EnvManager(BaseManager):
 EnvManager.register("get_state")
 EnvManager.register("get_sem_mutex")
 EnvManager.register("get_sem_prey")
-
-# État local du prédateur
-class PredatorState:
-    """
-    Représente l'état interne d'un prédateur.
-    - état local : énergie, actif/passif
-    - IPC : state,  sem_mutex, sem_prey, socket
-    """
-
-    def __init__(self, pid: int, state: Any, sem_mutex: Any, sem_prey: Any, socket: socket.socket, energy: float = INITIAL_ENERGY, active: bool = True) -> None:
-        """
-        Initialise l'état d'un prédateur.
-        """
-        self.pid = pid
-        self.energy = energy
-        self.active = active
-
-        # Références IPC
-        self.state = state
-        self.sem_mutex = sem_mutex
-        self.sem_prey = sem_prey
-        self.socket = socket
 
 
 # Socket helpers
@@ -74,7 +47,7 @@ def predator_main() -> None:
     cleanup(state)
 
 # Initialisation IPC
-def init_ipc() -> PredatorState:
+def init_ipc() -> Dict[str, Any]:
     """
     Initialise et attache tous les mécanismes IPC nécessaires au prédateur.
     Cette fonction ouvre la mémoire partagée, les sémaphores requis et établit la connexion socket avec le processus environnement.
@@ -93,17 +66,23 @@ def init_ipc() -> PredatorState:
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.connect((ENV_HOST, ENV_PORT))
 
-    return PredatorState(pid=pid, state=shared_state, sem_mutex=sem_mutex, sem_prey=sem_prey, socket=sock, energy=INITIAL_ENERGY, active=True)
-
+    return {
+        "state": shared_state,
+        "sem_mutex": sem_mutex,
+        "sem_prey": sem_prey,
+        "socket": sock,
+        "pid": pid,
+        "energy": INITIAL_ENERGY,
+        "active": True
+    }
 
 # Join (socket)
 
-def join_simulation(state: PredatorState) -> None:
+def join_simulation(state: Dict[str, Any]) -> None:
     """
     Signale à env l'arrivée d'un prédateur (socket)
     """
-    send_json(state.socket, {"role": "predator", "pid": state.pid})
-
+    send_json(state["socket"], {"role": "predator", "pid": state["pid"]})
     # à voir si c'est env qui modifie la mémoire partagée ou le prédateur
 
 
