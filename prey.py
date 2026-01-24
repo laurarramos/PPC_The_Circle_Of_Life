@@ -4,6 +4,8 @@ import socket
 import json
 from multiprocessing.managers import BaseManager
 
+from pyparsing import Dict, Any
+
 # Config globale
 ENV_HOST = 'localhost'
 ENV_PORT = 1789

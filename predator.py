@@ -4,15 +4,16 @@ import socket
 import json
 from multiprocessing.managers import BaseManager
 
+from pyparsing import Any, Dict
+
 # Constantes globales 
 ENV_HOST = 'localhost'
 ENV_PORT = 1789
-
 MANAGER_HOST = 'localhost'
 MANAGER_PORT = 50000
 AUTHKEY = b"llave"
 
-TICK_SLEEP_DEFAULT = 0.2  # secondes
+TICK_SLEEP_DEFAULT = 0.2
 INITIAL_ENERGY = 100.0
 ENERGY_GAIN_FROM_PREY = 20.0
 REPRODUCTION_COST = 10.0
@@ -21,204 +22,116 @@ REPRODUCTION_COST = 10.0
 class EnvManager(BaseManager):
     pass
 
-EnvManager.register("get_state")
+EnvManager.register("get_shared_state")
 EnvManager.register("get_sem_mutex")
 EnvManager.register("get_sem_prey")
 
-
-# Socket helpers
-
-def send_json(sock: socket.socket, message: Dict[str, Any]) -> None:
+# Utilitaires
+def send_json(sock: socket.socket, message: dict) -> None:
     """
-    Envoie un message JSON délimité par '\\n' (NDJSON).
+    Envoie un message JSON terminé par un saut de ligne.
     """
     data = (json.dumps(message) + "\n").encode("utf-8")
     sock.sendall(data)
 
-# Point d'entrée
-def predator_main() -> None:
+def init_ipc() -> dict:
     """
-    Point d'entrée du processus prédateur.
-    Initialise les mécanismes de communication inter-processus, rejoint la simultaion et exécute la boucle proincipale du prédateur.
+    Initialise les connexions au manager et à la socket.
     """
-    state = init_ipc()
-    join_simulation(state)
-    simulation_loop(state)
-    cleanup(state)
-
-# Initialisation IPC
-def init_ipc() -> Dict[str, Any]:
-    """
-    Initialise et attache tous les mécanismes IPC nécessaires au prédateur.
-    Cette fonction ouvre la mémoire partagée, les sémaphores requis et établit la connexion socket avec le processus environnement.
-    """
-    pid = os.getpid()
-
-    # Connexion au manager (env héberge l'état global)
     mgr = EnvManager(address=(MANAGER_HOST, MANAGER_PORT), authkey=AUTHKEY)
     mgr.connect()
 
-    shared_state = mgr.get_state()
-    sem_mutex = mgr.get_sem_mutex()
-    sem_prey = mgr.get_sem_prey()  
-
-    # Socket vers env (uniquement pour JOIN)
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.connect((ENV_HOST, ENV_PORT))
 
     return {
-        "state": shared_state,
-        "sem_mutex": sem_mutex,
-        "sem_prey": sem_prey,
+        "pid": os.getpid(),
+        "shared_state": mgr.get_shared_state(),
+        "sem_mutex": mgr.get_sem_mutex(),
+        "sem_prey": mgr.get_sem_prey(),
         "socket": sock,
-        "pid": pid,
-        "energy": INITIAL_ENERGY,
-        "active": True
     }
 
-# Join (socket)
-
-def join_simulation(state: Dict[str, Any]) -> None:
+# Logique fonctionnelle
+def try_hunt(state) -> None:
     """
-    Signale à env l'arrivée d'un prédateur (socket)
+    Tente de chasser une proie si le sémaphore sem_prey est disponible
     """
-    send_json(state["socket"], {"role": "predator", "pid": state["pid"]})
-    # à voir si c'est env qui modifie la mémoire partagée ou le prédateur
+    # On essaie d'acquérir un jeton de proie active (non bloquant)
+    if state["sem_prey"].acquire(blocking=False):
+        # On verrouille le mutex pour modifier la mémoire partagée
+        state["sem_mutex"].acquire()
+        
+        pids = state["shared_state"].get("pid_preys_active", [])
+        
+        if pids:
+            # On retire la première proie de la liste (consommation)
+            victim_pid = pids.pop(0)
+            state["shared_state"]["pid_preys_active"] = pids
+            
+            # Mise à jour de l'énergie locale et du compteur global
+            state["energy"] += ENERGY_GAIN_FROM_PREY
+            
+            # On décrémente le nombre total de proies dans l'environnement
+            nb = state["shared_state"].get("nb_preys", 0)
+            state["shared_state"]["nb_preys"] = max(0, nb - 1)
+            
+            print(f"[Predator {state['pid']}] Ate prey {victim_pid}")
+            
+            # Libération du mutex après modification
+            state["sem_mutex"].release()
+        else:
+            # Si la liste était vide par erreur de synchro, on libère le mutex
+            state["sem_mutex"].release()
+            # Et on rend le jeton sem_prey puisqu'on n'a pas mangé
+            state["sem_prey"].release()
 
-
-# Lecture de paramètres globaux
-def read_global_parameters(state: PredatorState) -> Dict[str, Any]:
-    state.sem_mutex.acquire()
-    
-    state.sem_mutex.release()
-
-    return {
-        "running": ,
-        "H_pred": ,
-        "R_pred": ,
-        "energy_decay": ,
-    }
-
-# Boucle de simulation
-def simulation_loop(state: PredatorState) -> None:
+def main_loop(state) -> None:
     """
-    Boucle principale de la simulation du prédateur.
-    À chaque itération, le prédateur met à jour son énergie et son état, tente de chasser, se reproduit ou meurt, puis attend le prochain tick de simulation.
+    Boucle de simulation principale du prédateur
     """
-    while True:
-        params = read_global_parameters(state)
+    alive = True
 
-        if not params["running"]:
-            break
+    while alive:
+        params = state["shared_state"]
+        h_threshold = params.get("H")
+        r_threshold = params.get("R")
+        energy_decay = params.get("energy_decay")
 
-        update_energy(state, params["energy_decay"])
-        update_activity_state(state, params["H_pred"])
+        # Diminution régulière de l'énergie
+        state["energy"] -= energy_decay
 
-        if state.active:
-            hunted = try_hunt(state)
-            if hunted:
-                consume_prey(state)
+        # Le prédateur tente de manger s'il a faim (énergie < H)
+        if state["energy"] < h_threshold:
+            try_hunt(state)
 
-        if can_reproduce(state, params["R_pred"]):
-            reproduce(state)
+        # Gestion de la reproduction
+        if alive and state["energy"] > r_threshold:
+            state["energy"] -= REPRODUCTION_COST
+            send_json(state["socket"], {"type": "reproduce", "role": "predator", "pid": state["pid"]})
 
-        if is_dead(state):
-            notify_death(state)
-            break
+        # Vérification de la mort
+        if state["energy"] <= 0:
+            print(f"[Predator {state['pid']}] Died of hunger")
+            alive = False
+        
+        time.sleep(TICK_SLEEP_DEFAULT)
 
-        sleep_tick()
-
-
-# Gestion de l'énergie et de l'état
-def update_energy(state: PredatorState, energy_decay: float) -> None:
+def cleanup(state) -> None:
     """
-    Met à jour l'énergie du prédateur en appliquant la perte d'énergie liée à l'écoulement du temps.
+    Libère les ressources et informe de la mort.
     """
-    state.energy -= energy_decay
+    send_json(state["socket"], {"type": "death", "role": "predator", "pid": state["pid"]})
+    state["socket"].close()
 
-
-def update_activity_state(state: PredatorState, activation_threshold: float) -> None:
-    """
-    Met à jour l'état actif ou passif du prédateur en fonction de son énergie et du seuil d'activation global.
-    """
-    state.active = state.energy < activation_threshold
-
-
-# Chasse (alimentation)
-def hunt(state: PredatorState) -> bool:
-    """
-    Tente de chasser une proie active.
-    Cette fonction essaie d'acquérir le sémaphore représentant les proies actives disponibles.
-    
-    Retourne :
-        True si une proie a pu être chassée,
-        False sinon.
-    """
-    return state.sem_prey.acquire(blocking=False)
-
-
-def consume_prey(state: PredatorState) -> None:
-    """
-    Traite la consommation d'une proie par le prédateur.
-    Met à jour l'énergie du prédateur et notifie le processus environnement de l'événement.
-    """
-    state.energy += ENERGY_GAIN_FROM_PREY
-    send_json(state.socket, {"type": "eat_prey", "pid": state.pid})
-
-
-# Reproduction
-def can_reproduce(state: PredatorState,reproduction_threshold: float) -> bool:
-    """
-    Détermine si le prédateur peut se reproduire.
-    Le prédateur est reproductible si son énergie dépasse le seuil de reproduction global.
-    
-    Retourne :
-        True si la reproduction est possible,
-        False sinon.
-    """
-    return state.energy > reproduction_threshold
-
-
-def reproduce(state: PredatorState) -> None:
-    """
-    Signale au processus environnement une demande de reproduction du prédateur, ce qui entraîne une augmentation de la population.
-    """
-    state.energy -= REPRODUCTION_COST
-    send_json(state.socket, {"type": "reproduce", "role": "predator", "pid": state.pid})
-
-
-# Mort et arrêt
-def is_dead(state: PredatorState) -> bool:
-    """
-    Vérifie si le prédateur est mort.
-    Le prédateur est considéré comme mort lorsque son énergie devient négative.
-    
-    Retourne :
-        True si le prédateur est mort,
-        False sinon.
-    """
-    return state.energy < 0
-
-
-def notify_death(state: PredatorState) -> None:
-    """
-    Informe le processus environnement de la mort du prédateur afin que la population globale soit mise à jour.
-    """
-    send_json(state.socket, {"type": "death", "role": "predator", "pid": state.pid})
-    # à vérifier comment on fait
-
-# Utilitaires
-def sleep_tick() -> None:
-    time.sleep(TICK_SLEEP_DEFAULT)
-
-def cleanup(state: PredatorState) -> None:
-    """
-    Libère proprement les ressources utilisées par le prédateur.
-    Ferme la connexion socket et détache les mécanismes IPC locaux avant la terminaison du processus.
-    """
-    pass
-
-# Lancememt
-
+# Lancement
 if __name__ == "__main__":
-    predator_main()
+    ipc = init_ipc()
+    # État local du prédateur
+    state = {**ipc, "energy": INITIAL_ENERGY}
+    
+    # Signalement de l'arrivée au processus env
+    send_json(state["socket"], {"type": "join", "role": "predator", "pid": state["pid"]})
+    
+    main_loop(state)
+    cleanup(state)
