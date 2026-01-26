@@ -65,32 +65,30 @@ def try_hunt(state) -> None:
     # On essaie d'acquérir un jeton de proie active (non bloquant)
     if state["sem_prey"].acquire(blocking=False):
         print(f"[Predator {state['pid']}] Trying to hunt...")
-        # On verrouille le mutex pour modifier la mémoire partagée
-        state["sem_mutex"].acquire()
+
+        sucess = False # variable pour savoir si on a effectivement trouvé un PID
+
+        with state["sem_mutex"]:
+            pids = state["shared_state"].get("pid_preys_active", [])
+            
+            if pids:
+                # On retire la première proie de la liste (consommation)
+                victim_pid = pids.pop(0)
+                state["shared_state"]["pid_preys_active"] = pids
+                
+                # Mise à jour de l'énergie locale et du compteur global
+                state["energy"] += ENERGY_GAIN_FROM_PREY
+                
+                # On décrémente le nombre total de proies dans l'environnement
+                nb = state["shared_state"].get("nb_preys", 0)
+                state["shared_state"]["nb_preys"] = max(0, nb - 1)
+                
+                print(f"[Predator {state['pid']}] Ate prey {victim_pid}, energy now: {state['energy']:.1f}")
+                sucess = True
+            else:
+                print(f"[Predator {state['pid']}] No prey available")
         
-        pids = state["shared_state"].get("pid_preys_active", [])
-        
-        if pids:
-            # On retire la première proie de la liste (consommation)
-            victim_pid = pids.pop(0)
-            state["shared_state"]["pid_preys_active"] = pids
-            
-            # Mise à jour de l'énergie locale et du compteur global
-            state["energy"] += ENERGY_GAIN_FROM_PREY
-            
-            # On décrémente le nombre total de proies dans l'environnement
-            nb = state["shared_state"].get("nb_preys", 0)
-            state["shared_state"]["nb_preys"] = max(0, nb - 1)
-            
-            print(f"[Predator {state['pid']}] Ate prey {victim_pid}, energy now: {state['energy']:.1f}")
-            
-            # Libération du mutex après modification
-            state["sem_mutex"].release()
-        else:
-            print(f"[Predator {state['pid']}] No prey available")
-            # Si la liste était vide par erreur de synchro, on libère le mutex
-            state["sem_mutex"].release()
-            # Et on rend le jeton sem_prey puisqu'on n'a pas mangé
+        if not sucess:
             state["sem_prey"].release()
     else:
         print(f"[Predator {state['pid']}] Prey semaphore unavailable (hunting in progress elsewhere)")
@@ -144,19 +142,15 @@ def cleanup(state) -> None:
     Libère les ressources en mettant à jour la mémoire partagée.
     """
     print(f"[Predator {state['pid']}] Cleanup: removing myself from shared state")
-    # vérouillage manuel du mutex
-    state["sem_mutex"].acquire()
-
-    # mise à jour du nombre de prédateurs
-    current_nb = state["shared_state"].get("nb_predators", 0)
-    state["shared_state"]["nb_predators"] = max(0, current_nb - 1)
-
-    # libération du mutex
-    state["sem_mutex"].release()
+    
+    with state["sem_mutex"]:
+        # mise à jour du nombre de prédateurs
+        current_nb = state["shared_state"].get("nb_predators", 0)
+        state["shared_state"]["nb_predators"] = max(0, current_nb - 1)
 
     # fermeture de la socket
     state["socket"].close()
-    print(f"[Predator {state['pid']}] Cleanup done ✓")
+    
 
 
 # Lancement
