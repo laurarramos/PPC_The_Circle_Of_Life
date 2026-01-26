@@ -5,39 +5,17 @@ import socket
 import signal
 import time
 import json
-from multiprocessing import Semaphore, Queue
+from multiprocessing import Semaphore, Manager
 from multiprocessing.managers import BaseManager
 
 
 HOST = "localhost"
 PORT = 1789
 MANAGER_PORT = 50000
-AUTHKEY = b"llave"
-
-class SharedState:
-    """
-    Structure de données partagées entre les processus via mémoire partagée.
-    """
-    def __init__(self, grass, nb_preys, pid_preys_active, nb_predators, H, R, drought=False, energy_decay=1, serve=True):
-        self.grass = grass
-        self.nb_preys = nb_preys
-        self.pid_preys_active = pid_preys_active
-        self.nb_predators = nb_predators
-        self.H = H
-        self.R = R
-        self.drought = drought
-        self.energy_decay = energy_decay
-        self.serve = serve
-    
+AUTHKEY = b"llave"  
 
 class EnvManager(BaseManager):
     pass
-
-EnvManager.register("get_state")
-EnvManager.register("get_sem_grass")
-EnvManager.register("get_sem_mutex")
-EnvManager.register("get_d_to_env")
-EnvManager.register("get_env_to_d")
 
 class EnvProcess:
     """
@@ -49,11 +27,30 @@ class EnvProcess:
     - gère les sémaphores pour la synchronisation des accès aux ressources partagées 
     """
     def __init__(self):
+        # Manager local pour la mémoire partagée et les sémaphores
+        self.internal_manager = Manager()
 
+        # définition de la mémoire partagée comme un dictionnaire
+        self.shared_state = self.internal_manager.dict({
+            "grass": 100,
+            "nb_preys": 0,
+            "pid_preys_active": [],
+            "nb_predators": 0,
+            "H": 30,
+            "R": 80,
+            "drought": False,
+            "energy_decay": 1,
+            "serve": True 
+        })
 
-        # Manager
-        self.manager = EnvManager(address=(HOST, MANAGER_PORT), authkey=AUTHKEY)
+        # Semaphores
+        self.sem_mutex = self.internal_manager.Semaphore(1)
+        self.sem_grass = self.internal_manager.Semaphore(self.shared_state["grass"])
+        self.sem_prey = self.internal_manager.Semaphore(0) 
 
+        # Display communication
+        self.d_to_env = self.internal_manager.Queue()
+        self.env_to_d = self.internal_manager.Queue()
 
         EnvManager.register("get_state", callable=lambda: self.shared_state)
         EnvManager.register("get_sem_grass", callable=lambda: self.sem_grass)
@@ -61,73 +58,73 @@ class EnvProcess:
         EnvManager.register("get_d_to_env", callable=lambda: self.d_to_env)
         EnvManager.register("get_env_to_d", callable=lambda: self.env_to_d)
 
-        # Mémoire partagée
-        self.shared_state = SharedState(grass=100, nb_preys=0, pid_preys_active=[], nb_predators=0, H=5, R=2, drought=False, energy_decay=1, serve=True)
-       
-        # Semaphores
-        self.sem_mutex = Semaphore(1)
-        self.sem_grass = Semaphore(self.shared_state.grass)
-        self.sem_prey = Semaphore(0) 
+        self.manager_server = EnvManager(address=(HOST, MANAGER_PORT), authkey=AUTHKEY)
 
         # Socket
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.bind((HOST, PORT))
         self.server_socket.listen()
 
-        # Display communication
-        self.d_to_env = Queue()
-        self.env_to_d = Queue()
+        # Signal
+        signal.signal(signal.SIGUSR1, self.drought_handler)
 
 
     def start(self):
-        signal.signal(signal.SIGUSR1, self.drought_handler)
+        self.manager_server.start()
+        print("[EnvProcess] Manager server démarré.")
 
-        try:
-            self.manager.start()
-            print("[EnvProcess] Manager démarré.")
-        except Exception as e:
-            print(f"[EnvProcess] Erreur lors du démarrage du manager: {e}")
-            self.shared_state.serve = False
-            return
-        
         threading.Thread(target=self.handle_connections, daemon=True).start()
 
         threading.Thread(target=self.process_display_command, daemon=True).start()
+        
+        threading.Thread(target=self.schedule_message_queue, daemon=True).start()
 
         self.schedule_random_drought()
-        self.schedule_message_queue()
 
-        while self.shared_state.serve:
-            time.sleep(1)
+        print(f"[Env] Serveur Socket écoute sur {PORT}")
+        print("[Env] Simulation en cours...")
 
-        self.cleanup()
+        try:
+            while self.shared_state["serve"]:
+                if not self.shared_state["drought"]:
+                    self.grass_growth()
+        except:
+            pass
+            
+
+        finally:
+            if self.shared_state["serve"]:
+                self.cleanup()
 
     def grass_growth(self):
         """
         Augmente la quantité d'herbe dans l'environnement.
         """
         #doit modifier sem_grass puis shared_state.grass
-        pass
+        with self.sem_mutex:
+            self.shared_state["grass"] += 1
+            self.sem_grass.release()
+        time.sleep(1)  # Croissance toutes les secondes
 
     def process_display_command(self):
         """
         Traite les commandes reçues depuis le display via la file de messages d_to_env.
         """
-        while self.shared_state.serve:  # Utilise shared_state.serve
+        while self.shared_state["serve"]:  # Utilise shared_state.serve
             try:
                 command_msg = self.d_to_env.get(timeout=0.1)
                 if command_msg.get("cmd") == "SET_GRASS":
                     with self.sem_mutex:
-                        self.shared_state.grass = command_msg["value"]
-                        self.sem_grass = Semaphore(self.shared_state.grass)
+                        self.shared_state["grass"] = command_msg["value"]
+                        self.sem_grass = Semaphore(self.shared_state["grass"])
                 elif command_msg.get("cmd") == "SET_PREYS":
                     with self.sem_mutex:
-                        self.shared_state.nb_preys = command_msg["value"]
+                        self.shared_state["nb_preys"] = command_msg["value"]
                 elif command_msg.get("cmd") == "SET_PREDATORS":
                     with self.sem_mutex:
-                        self.shared_state.nb_predators = command_msg["value"]
+                        self.shared_state["nb_predators"] = command_msg["value"]
                 elif command_msg.get("cmd") == "STOP":
-                    self.shared_state.serve = False  # Met à jour shared_state.serve
+                    self.shared_state["serve"] = False  # Met à jour shared_state.serve
             except Exception:
                 continue
 
@@ -136,15 +133,15 @@ class EnvProcess:
         Envoie périodiquement l'état partagé vers le display via la file de messages.
         """
         def send_state_to_display():
-            while self.shared_state.serve:
+            while self.shared_state["serve"]:
                 with self.sem_mutex:
                     state = {
-                        "grass": self.shared_state.grass,
-                        "nb_preys": self.shared_state.nb_preys,
-                        "nb_predators": self.shared_state.nb_predators,
-                        "drought": self.shared_state.drought,
-                        "H": self.shared_state.H,
-                        "R": self.shared_state.R,
+                        "grass": self.shared_state["grass"],
+                        "nb_preys": self.shared_state["nb_preys"],
+                        "nb_predators": self.shared_state["nb_predators"],
+                        "drought": self.shared_state["drought"],
+                        "H": self.shared_state["H"],
+                        "R": self.shared_state["R"],
                     }
                     self.env_to_d.put(state)
                 time.sleep(1)  
@@ -163,30 +160,32 @@ class EnvProcess:
         Déclenche une sécheresse en envoyant un signal SIGUSR1.
     
         """
-        if self.shared_state.serve:
+        if self.shared_state["serve"]:
             os.kill(os.getpid(), signal.SIGUSR1)
 
     def drought_handler(self, signum, frame):
+        print("\n!!! SÉCHERESSE DÉCLENCHÉE !!!")
         with self.sem_mutex:
-            old = self.shared_state.grass
-            new = old // 2
-            delta = old - new
-
-            #Met à jour l'état partagé
-            self.shared_state.grass = new
-            self.shared_state.drought = True
-            print(f"[EnvProcess] Drought occurred! Grass reduced from {old} to {new}.")
-
+            self.shared_state["drought"] = True
+            
+            #Réduit et met à jour l'état partagé
+            reduced = self.shared_state["grass"] // 2
+            self.shared_state["grass"] = reduced
+            
         #Retire physiquement l’herbe
-        for _ in range(delta):
-            self.sem_grass.acquire()
+        for _ in range(reduced):
+            self.sem_grass.acquire(blocking=False)
 
-        #Planifie une nouvelle sécheresse alétaoire 
+        threading.Timer(5, self.end_drought).start()
+
+    def end_drought(self):
+        print("+++ SÉCHERESSE TERMINÉE +++\n")
+        with self.sem_mutex:
+            self.shared_state["drought"] = False
         self.schedule_random_drought()
 
-
     def handle_connections(self):
-        while self.shared_state.serve:
+        while self.shared_state["serve"]:
             try:
                 client, addr = self.server_socket.accept()
                 threading.Thread(
@@ -203,20 +202,30 @@ class EnvProcess:
         Met à jour les états partagés en fonction des messages écoutés dans la socket.
         """
         with client_socket:
-            data = client_socket.recv(1024).decode().strip()
-            try: 
-                message = json.loads(data)
-                if message.get("role")=="prey":
-                    with self.sem_mutex:
-                        self.shared_state.nb_preys += 1
-                if message.get("role")=="predator":
-                    with self.sem_mutex:
-                        self.shared_state.nb_predators += 1
-            except json.JSONDecodeError:
-                print(f"[EnvProcess] Message JSON invalide reçu: {data}")
-            except Exception as e:
-                print(f"[EnvProcess] Erreur inattendue {e}")
+            while self.shared_state["serve"]:
+                data = client_socket.recv(1024).decode().strip()
+                try: 
+                    message = json.loads(data)
+                    if message.get("role")=="prey":
+                        with self.sem_mutex:
+                            self.shared_state["nb_preys"] += 1
+                    if message.get("role")=="predator":
+                        with self.sem_mutex:
+                            self.shared_state["nb_predators"] += 1
+                except json.JSONDecodeError:
+                    print(f"[EnvProcess] Message JSON invalide reçu: {data}")
+                except Exception as e:
+                    print(f"[EnvProcess] Erreur inattendue {e}")
 
     def cleanup(self):
-        self.manager.shutdown()
+        print("[EnvProcess] Nettoyage des ressources...")
+        self.shared_state["serve"] = False
         self.server_socket.close()
+
+        self.manager_server.shutdown()
+
+
+if __name__ == "__main__":
+    env = EnvProcess()
+    print("[Main] Démarrage de l'environnement...")
+    env.start()
