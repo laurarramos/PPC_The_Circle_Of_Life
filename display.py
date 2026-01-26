@@ -2,8 +2,8 @@ import cmd
 import time
 import sys
 from typing import Any, Optional, Dict
+from queue import Empty 
 
-from shared_state import connect_ipc_manager, get_ipc_handles_from_manager
 
 
 class DisplayState:
@@ -44,21 +44,37 @@ def display_main() -> None:
         cleanup(state)
 
 
+from multiprocessing.managers import BaseManager
+
+HOST = "localhost"
+MANAGER_PORT = 50000
+AUTHKEY = b"llave"
+
 def init_ipc() -> DisplayState:
     """
     Initialise et attache les mécanismes IPC nécessaires au display.
-
-    Le display étant lancé séparément, il récupère les files de messages
-    via le manager (connect_ipc_manager).
+    Se connecte directement au manager pour récupérer les files de messages.
 
     Returns:
         Un objet DisplayState initialisé.
     """
-    mgr = connect_ipc_manager()
-    sem_mutex, sem_grass, sem_prey, q_to_env, q_from_env = get_ipc_handles_from_manager(mgr)
+    class EnvManager(BaseManager):
+        pass
 
-    # Le display n'utilise pas les sémaphores : on ne garde que les queues.
+    EnvManager.register("get_d_to_env")
+    EnvManager.register("get_env_to_d")
+
+
+    manager = EnvManager(address=(HOST, MANAGER_PORT), authkey=AUTHKEY)
+    manager.connect()
+
+    # Récupère les files de messages
+    q_to_env = manager.get_d_to_env()
+    q_from_env = manager.get_env_to_d()
+
+    # Créer et retourner l'objet DisplayState
     return DisplayState(mq_to_env=q_to_env, mq_from_env=q_from_env, refresh_period=0.5)
+
 
 
 def ui_loop(state: DisplayState) -> None:
@@ -72,10 +88,15 @@ def ui_loop(state: DisplayState) -> None:
     - envoie les commandes correspondantes à env via la file de messages.
     """
     while state.running:
-        # 1. Récupère et traite les messages de env
+        
         poll_env_messages(state)
 
-        # 2. Lit et traite l'entrée utilisateur (non bloquante)
+        #Affiche l'état actuel périodiquement
+        if state.last_snapshot and (time.time() - state.last_render_time) >= state.refresh_period:
+            print(f"[Display] Etat actuel: {state.last_snapshot}")
+            state.last_render_time = time.time()
+
+        # Lit et traite l'entrée utilisateur (non bloquante)
         user_cmd = read_user_command()
         if user_cmd:
             command_msg = parse_command(user_cmd)
@@ -84,7 +105,7 @@ def ui_loop(state: DisplayState) -> None:
             if user_cmd.strip().lower() == "stop":
                 state.running = False
 
-        # 3. Rafraîchit l'affichage si nécessaire
+
 
 
         time.sleep(0.1)
@@ -101,18 +122,18 @@ def poll_env_messages(state: DisplayState) -> None:
         try:
             msg = state.mq_from_env.get_nowait() #Non bloquant
             handle_env_message(state, msg)
-        except Exception: # queue vide
+        except Empty: # queue vide
             break  
 
 
-def handle_env_message(state: DisplayState, msg: dict) -> None: #à revoir en fonction de besoins 
+def handle_env_message(state: DisplayState, msg: dict) -> None: 
     """
     Traite les messages reçu depuis env.
+    Met à jour l'état interne en conséquence.
     """
 
-    pass
-
-
+    state.last_snapshot = msg
+    print(f"[Display] Etat reçu: {msg}")
 
 def read_user_command() -> Optional[str]:
     """
@@ -127,16 +148,37 @@ def read_user_command() -> Optional[str]:
     return None
 
 
-def parse_command(cmd: str) -> Optional[dict]: #à revoir 
+def parse_command(cmd: str) -> Optional[dict]:
     """
-    Analyse une commande textuelle et ce qu'il doit faire en fonction de cette commande.
-
+    Analyse une commande textuelle et renvoie un dictionnaire de commande.
     """
-    pass 
+    parts = cmd.split()
+    if not parts:
+        return None
 
+    try:
+        if parts[0] == "set":
+            if len(parts) < 3:
+                return None
+            value = int(parts[2])
+            if parts[1] == "grass":
+                return {"cmd": "SET_GRASS", "value": value}
+            elif parts[1] == "preys":
+                return {"cmd": "SET_PREYS", "value": value}
+            elif parts[1] == "predators":
+                return {"cmd": "SET_PREDATORS", "value": value}
+        elif parts[0] == "stop":
+            return {"cmd": "STOP"}
+    except (IndexError, ValueError):
+        return None
+
+    return None
+
+        
+    
 def send_command_to_env(state: DisplayState, command_msg: dict) -> None:
     """
-    Envoie une commande à env via `mq_to_env`.
+    Envoie une commande à env via mq_to_env.
 
     Args:
         command_msg: Dictionnaire représentant la commande (ex: {"cmd": "SET", ...}).
