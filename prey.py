@@ -63,16 +63,12 @@ def update_visibility(state, h_threshold: float) -> None:
     is_hungry = state["energy"] < h_threshold
 
     if is_hungry and not state["active"]:
-        # on vérouille manuellement l'accès à la mémoire partagée
-        state["sem_mutex"].acquire()
-
-        # on effectue la modification via le proxy
-        pids = state["shared_state"].get("pid_preys_active", [])
-        pids.append(state["pid"])
-        state["shared_state"]["pid_preys_active"] = pids
-
-        # on libère le mutex
-        state["sem_mutex"].release()
+        
+        with state["sem_mutex"]:
+            # on effectue la modification via le proxy
+            pids = state["shared_state"].get("pid_preys_active", [])
+            pids.append(state["pid"])
+            state["shared_state"]["pid_preys_active"] = pids
 
         # on signale qu'une proie est active et chassable
         state["sem_prey"].release()
@@ -86,14 +82,12 @@ def withdraw_from_list(state) -> None:
     retire la proie de la liste des cibles sans arrêter le processus
     """
     if state["active"]:
-        state["sem_mutex"].acquire()
 
-        pids = state["shared_state"].get("pid_preys_active", [])
-        if state["pid"] in pids:
-            pids.remove(state["pid"])
-            state["shared_state"]["pid_preys_active"] = pids
-
-        state["sem_mutex"].release()
+        with state["sem_mutex"]:
+            pids = state["shared_state"].get("pid_preys_active", [])
+            if state["pid"] in pids:
+                pids.remove(state["pid"])
+                state["shared_state"]["pid_preys_active"] = pids
 
         state["sem_prey"].acquire(blocking=False)
         state["active"] = False
@@ -105,13 +99,12 @@ def check_if_eaten(state) -> bool:
     eaten = False
 
     if state["active"]:
-        state["sem_mutex"].acquire()
-        pids = state["shared_state"].get("pid_preys_active", [])
+        with state["sem_mutex"]:
+            pids = state["shared_state"].get("pid_preys_active", [])
 
-        if state["pid"] not in pids:
-            eaten = True
+            if state["pid"] not in pids:
+                eaten = True
         
-        state["sem_mutex"].release()
     return eaten
 
 def main_loop(state) -> None:
@@ -122,10 +115,19 @@ def main_loop(state) -> None:
 
     while alive:
         params = state["shared_state"]
+
+        # vérification si la simulation doit s'arrêter (demandé par display)
+        if not params.get("serve", True):
+            print(f"[Prey {state['pid']}] Global stop received.")
+            alive = False
+            continue
+
+        # Récupération des seuils depuis la mémoire partagée
         h_threshold = params.get("H")
         r_threshold = params.get("R")
         energy_decay = params.get("energy_decay")
 
+        # Décrémentation de l'énergie
         state["energy"] -= energy_decay
 
         update_visibility(state, h_threshold)
@@ -151,10 +153,19 @@ def main_loop(state) -> None:
 
 def cleanup(state) -> None:
     """
-    Libère les ressources
+    Libère les ressources et met à jour la mémoire partagée.
     """
+    # on se retire de la liste des proies actives si besoin
     withdraw_from_list(state)
+
+    # mise à jourdu compteur global de proies
+    with state["sem_mutex"]:
+        current_nb = state["shared_state"].get("nb_preys", 0)
+        state["shared_state"]["nb_preys"] = max(0, current_nb - 1)
+    # fermeture de la socket
     state["socket"].close()
+    print(f"[Prey {state['pid']}] Cleanup done ✓")
+
 
 # Lancement
 if __name__ == "__main__":
@@ -163,3 +174,4 @@ if __name__ == "__main__":
     send_json(state["socket"], {"type": "join", "role": "prey", "pid": state["pid"]})
     main_loop(state)
     cleanup(state)
+    print("[Main] Prey process ended")
