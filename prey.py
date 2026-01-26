@@ -122,6 +122,14 @@ def main_loop(state) -> None:
 
     while alive:
         params = state["shared_state"]
+
+        # vérification si la simulation doit s'arrêter (demandé par display)
+        if not params.get("serve", True):
+            print(f"[Prey {state['pid']}] Global stop received.")
+            alive = False
+            continue
+
+        # Récupération des seuils depuis la mémoire partagée
         h_threshold = params.get("H")
         r_threshold = params.get("R")
         energy_decay = params.get("energy_decay")
@@ -151,10 +159,21 @@ def main_loop(state) -> None:
 
 def cleanup(state) -> None:
     """
-    Libère les ressources
+    Libère les ressources et met à jour la mémoire partagée.
     """
+    # on se retire de la liste des proies actives si besoin
     withdraw_from_list(state)
+
+    # mise à jourdu compteur global de proies
+    state["sem_mutex"].acquire()
+    current_nb = state["shared_state"].get("nb_preys", 0)
+    state["shared_state"]["nb_preys"] = max(0, current_nb - 1)
+    state["sem_mutex"].release()
+
+    # fermeture de la socket
     state["socket"].close()
+    print(f"[Prey {state['pid']}] Cleanup done ✓")
+
 
 # Lancement
 if __name__ == "__main__":
@@ -163,3 +182,4 @@ if __name__ == "__main__":
     send_json(state["socket"], {"type": "join", "role": "prey", "pid": state["pid"]})
     main_loop(state)
     cleanup(state)
+    print("[Main] Prey process ended")

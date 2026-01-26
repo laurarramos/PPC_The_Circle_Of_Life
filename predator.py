@@ -33,16 +33,21 @@ def send_json(sock: socket.socket, message: dict) -> None:
     """
     data = (json.dumps(message) + "\n").encode("utf-8")
     sock.sendall(data)
+    print(f"[Socket] Sent: {message}")
 
 def init_ipc() -> dict:
     """
     Initialise les connexions au manager et à la socket.
     """
+    print("[Init] Connecting to manager...")
     mgr = EnvManager(address=(MANAGER_HOST, MANAGER_PORT), authkey=AUTHKEY)
     mgr.connect()
+    print("[Init] Manager connected ✓")
 
+    print("[Init] Connecting to environment socket...")
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.connect((ENV_HOST, ENV_PORT))
+    print("[Init] Socket connected ✓")
 
     return {
         "pid": os.getpid(),
@@ -59,6 +64,7 @@ def try_hunt(state) -> None:
     """
     # On essaie d'acquérir un jeton de proie active (non bloquant)
     if state["sem_prey"].acquire(blocking=False):
+        print(f"[Predator {state['pid']}] Trying to hunt...")
         # On verrouille le mutex pour modifier la mémoire partagée
         state["sem_mutex"].acquire()
         
@@ -76,37 +82,53 @@ def try_hunt(state) -> None:
             nb = state["shared_state"].get("nb_preys", 0)
             state["shared_state"]["nb_preys"] = max(0, nb - 1)
             
-            print(f"[Predator {state['pid']}] Ate prey {victim_pid}")
+            print(f"[Predator {state['pid']}] Ate prey {victim_pid}, energy now: {state['energy']:.1f}")
             
             # Libération du mutex après modification
             state["sem_mutex"].release()
         else:
+            print(f"[Predator {state['pid']}] No prey available")
             # Si la liste était vide par erreur de synchro, on libère le mutex
             state["sem_mutex"].release()
             # Et on rend le jeton sem_prey puisqu'on n'a pas mangé
             state["sem_prey"].release()
+    else:
+        print(f"[Predator {state['pid']}] Prey semaphore unavailable (hunting in progress elsewhere)")
 
 def main_loop(state) -> None:
     """
     Boucle de simulation principale du prédateur
     """
     alive = True
+    tick = 0
 
     while alive:
+        tick += 1
         params = state["shared_state"]
+
+        # vérification si la simulation doit s'arrêter (demandé par display)
+        if not params.get("serve", True):
+            print(f"[Predator {state['pid']}] Global stop received.")
+            alive = False
+            continue
+        
+        # Récupération des seuils depuis la mémoire partagée
         h_threshold = params.get("H")
         r_threshold = params.get("R")
         energy_decay = params.get("energy_decay")
 
-        # Diminution régulière de l'énergie
+        # Métabolisme : diminution régulière de l'énergie
         state["energy"] -= energy_decay
+        print(f"[Predator {state['pid']}] Tick {tick}: Energy = {state['energy']:.1f} (decay: {energy_decay})")
 
         # Le prédateur tente de manger s'il a faim (énergie < H)
         if state["energy"] < h_threshold:
+            print(f"[Predator {state['pid']}] Hungry! (energy < {h_threshold})")
             try_hunt(state)
 
         # Gestion de la reproduction
         if alive and state["energy"] > r_threshold:
+            print(f"[Predator {state['pid']}] Ready to reproduce! (energy > {r_threshold})")
             state["energy"] -= REPRODUCTION_COST
             send_json(state["socket"], {"type": "reproduce", "role": "predator", "pid": state["pid"]})
 
@@ -119,19 +141,35 @@ def main_loop(state) -> None:
 
 def cleanup(state) -> None:
     """
-    Libère les ressources et informe de la mort.
+    Libère les ressources en mettant à jour la mémoire partagée.
     """
-    send_json(state["socket"], {"type": "death", "role": "predator", "pid": state["pid"]})
+    print(f"[Predator {state['pid']}] Cleanup: removing myself from shared state")
+    # vérouillage manuel du mutex
+    state["sem_mutex"].acquire()
+
+    # mise à jour du nombre de prédateurs
+    current_nb = state["shared_state"].get("nb_predators", 0)
+    state["shared_state"]["nb_predators"] = max(0, current_nb - 1)
+
+    # libération du mutex
+    state["sem_mutex"].release()
+
+    # fermeture de la socket
     state["socket"].close()
+    print(f"[Predator {state['pid']}] Cleanup done ✓")
+
 
 # Lancement
 if __name__ == "__main__":
+    print("[Main] Starting predator process...")
     ipc = init_ipc()
     # État local du prédateur
     state = {**ipc, "energy": INITIAL_ENERGY}
     
     # Signalement de l'arrivée au processus env
+    print(f"[Main] Predator PID: {state['pid']}, Initial energy: {state['energy']}")
     send_json(state["socket"], {"type": "join", "role": "predator", "pid": state["pid"]})
     
     main_loop(state)
     cleanup(state)
+    print("[Main] Predator process ended")
