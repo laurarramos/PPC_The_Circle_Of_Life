@@ -54,6 +54,7 @@ class EnvProcess:
 
         EnvManager.register("get_state", callable=lambda: self.shared_state)
         EnvManager.register("get_sem_grass", callable=lambda: self.sem_grass)
+        EnvManager.register("get_sem_prey", callable=lambda: self.sem_prey)
         EnvManager.register("get_sem_mutex", callable=lambda: self.sem_mutex)
         EnvManager.register("get_d_to_env", callable=lambda: self.d_to_env)
         EnvManager.register("get_env_to_d", callable=lambda: self.env_to_d)

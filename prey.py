@@ -4,7 +4,6 @@ import socket
 import json
 from multiprocessing.managers import BaseManager
 
-from pyparsing import Dict, Any
 
 # Config globale
 ENV_HOST = 'localhost'
@@ -29,7 +28,7 @@ EnvManager.register("get_sem_prey")
 
 
 # Utilitaires
-def send_json(sock: socket.socket, message: Dict[str, Any]) -> None:
+def send_json(sock: socket.socket, message) -> None:
     """
     Envoie un message JSON terminé par un saut de ligne.
     """
@@ -48,7 +47,7 @@ def init_ipc() -> dict:
 
     return {
         "pid": os.getpid(),
-        "shared_state": mgr.get_shared_state(),
+        "shared_state": mgr.get_state(),
         "sem_mutex": mgr.get_sem_mutex(),
         "sem_grass": mgr.get_sem_grass(),
         "sem_prey": mgr.get_sem_prey(),
@@ -64,11 +63,11 @@ def update_visibility(state, h_threshold: float) -> None:
 
     if is_hungry and not state["active"]:
         
-        with state["sem_mutex"]:
-            # on effectue la modification via le proxy
-            pids = state["shared_state"].get("pid_preys_active", [])
-            pids.append(state["pid"])
-            state["shared_state"]["pid_preys_active"] = pids
+        state["sem_mutex"].acquire()
+        pids = state["shared_state"].get("pid_preys_active", [])
+        pids.append(state["pid"])
+        state["shared_state"].update({"pid_preys_active": pids})
+        state["sem_mutex"].release()
 
         # on signale qu'une proie est active et chassable
         state["sem_prey"].release()
@@ -83,11 +82,12 @@ def withdraw_from_list(state) -> None:
     """
     if state["active"]:
 
-        with state["sem_mutex"]:
-            pids = state["shared_state"].get("pid_preys_active", [])
-            if state["pid"] in pids:
-                pids.remove(state["pid"])
-                state["shared_state"]["pid_preys_active"] = pids
+        state["sem_mutex"].acquire()
+        pids = state["shared_state"].get("pid_preys_active", [])
+        if state["pid"] in pids:
+            pids.remove(state["pid"])
+            state["shared_state"].update({"pid_preys_active": pids})
+        state["sem_mutex"].release()
 
         state["sem_prey"].acquire(blocking=False)
         state["active"] = False
@@ -99,12 +99,13 @@ def check_if_eaten(state) -> bool:
     eaten = False
 
     if state["active"]:
-        with state["sem_mutex"]:
-            pids = state["shared_state"].get("pid_preys_active", [])
+        state["sem_mutex"].acquire()
+        pids = state["shared_state"].get("pid_preys_active", [])
 
-            if state["pid"] not in pids:
-                eaten = True
-        
+        if state["pid"] not in pids:
+            eaten = True
+    
+        state["sem_mutex"].release()
     return eaten
 
 def main_loop(state) -> None:
@@ -159,9 +160,10 @@ def cleanup(state) -> None:
     withdraw_from_list(state)
 
     # mise à jourdu compteur global de proies
-    with state["sem_mutex"]:
-        current_nb = state["shared_state"].get("nb_preys", 0)
-        state["shared_state"]["nb_preys"] = max(0, current_nb - 1)
+    state["sem_mutex"].acquire()
+    current_nb = state["shared_state"].get("nb_preys", 0)
+    state["shared_state"].update({"nb_preys": max(0, current_nb - 1)})
+    state["sem_mutex"].release()
     # fermeture de la socket
     state["socket"].close()
     print(f"[Prey {state['pid']}] Cleanup done ✓")

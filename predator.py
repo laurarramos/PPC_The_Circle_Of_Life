@@ -22,7 +22,7 @@ REPRODUCTION_COST = 10.0
 class EnvManager(BaseManager):
     pass
 
-EnvManager.register("get_shared_state")
+EnvManager.register("get_state")
 EnvManager.register("get_sem_mutex")
 EnvManager.register("get_sem_prey")
 
@@ -51,7 +51,7 @@ def init_ipc() -> dict:
 
     return {
         "pid": os.getpid(),
-        "shared_state": mgr.get_shared_state(),
+        "shared_state": mgr.get_state(),
         "sem_mutex": mgr.get_sem_mutex(),
         "sem_prey": mgr.get_sem_prey(),
         "socket": sock,
@@ -68,26 +68,28 @@ def try_hunt(state) -> None:
 
         sucess = False # variable pour savoir si on a effectivement trouvé un PID
 
-        with state["sem_mutex"]:
-            pids = state["shared_state"].get("pid_preys_active", [])
-            
-            if pids:
-                # On retire la première proie de la liste (consommation)
-                victim_pid = pids.pop(0)
-                state["shared_state"]["pid_preys_active"] = pids
-                
-                # Mise à jour de l'énergie locale et du compteur global
-                state["energy"] += ENERGY_GAIN_FROM_PREY
-                
-                # On décrémente le nombre total de proies dans l'environnement
-                nb = state["shared_state"].get("nb_preys", 0)
-                state["shared_state"]["nb_preys"] = max(0, nb - 1)
-                
-                print(f"[Predator {state['pid']}] Ate prey {victim_pid}, energy now: {state['energy']:.1f}")
-                sucess = True
-            else:
-                print(f"[Predator {state['pid']}] No prey available")
+        state["sem_mutex"].acquire()
+        pids = state["shared_state"].get("pid_preys_active", [])
         
+        if pids:
+            # On retire la première proie de la liste (consommation)
+            victim_pid = pids.pop(0)
+            state["shared_state"].update({"pid_preys_active": pids})
+            
+            # Mise à jour de l'énergie locale et du compteur global
+            state["energy"] += ENERGY_GAIN_FROM_PREY
+            
+            # On décrémente le nombre total de proies dans l'environnement
+            nb = state["shared_state"].get("nb_preys", 0)
+            state["shared_state"].update({"nb_preys": max(0, nb - 1)})
+            
+            print(f"[Predator {state['pid']}] Ate prey {victim_pid}, energy now: {state['energy']:.1f}")
+            sucess = True
+        
+        else:
+            print(f"[Predator {state['pid']}] No prey available")
+
+        state["sem_mutex"].release()
         if not sucess:
             state["sem_prey"].release()
     else:
@@ -143,10 +145,11 @@ def cleanup(state) -> None:
     """
     print(f"[Predator {state['pid']}] Cleanup: removing myself from shared state")
     
-    with state["sem_mutex"]:
-        # mise à jour du nombre de prédateurs
-        current_nb = state["shared_state"].get("nb_predators", 0)
-        state["shared_state"]["nb_predators"] = max(0, current_nb - 1)
+    state["sem_mutex"].acquire()
+    # mise à jour du nombre de prédateurs
+    current_nb = state["shared_state"].get("nb_predators", 0)
+    state["shared_state"].update({"nb_predators": max(0, current_nb - 1)})
+    state["sem_mutex"].release()
 
     # fermeture de la socket
     state["socket"].close()
