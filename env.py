@@ -30,7 +30,8 @@ class SharedState:
 
 class EnvManager(BaseManager):
     pass
-
+EnvManager.register("get_state", SharedState)
+EnvManager.register("semaphore", Semaphore)
 
 class EnvProcess:
     """
@@ -43,12 +44,23 @@ class EnvProcess:
     """
     def __init__(self):
         self.serve = True
+
+        #Manager
+        EnvManager.register("get_state", callable=lambda: self.shared_state)
+        EnvManager.register("get_sem_mutex", callable=lambda: self.sem_mutex)
+        EnvManager.register("get_sem_grass", callable=lambda: self.sem_grass)
+        EnvManager.register("get_sem_prey", callable=lambda: self.sem_prey)
+
+        self.manager = EnvManager(address=(HOST, MANAGER_PORT), authkey=AUTHKEY)
+        self.manager.start()
+
         # Mémoire partagée
-        self.shared_state = SharedState(grass=100, nb_preys=0, pid_preys=[], nb_predators=0, pid_predators=[], H=5, R=2)
+        self.shared_state = SharedState(grass=100, nb_preys=0, pid_preys_active=[], nb_predators=0, pid_predators=[], H=5, R=2, drought=False, energy_decay=1)
+       
         # Semaphores
         self.sem_mutex = Semaphore(1)
         self.sem_grass = Semaphore(self.shared_state.grass)
-        self.sem_prey = Semaphore(0)
+        self.sem_prey = Semaphore(0) 
 
         # Socket
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -58,9 +70,6 @@ class EnvProcess:
         # Display communication
         self.d_to_env = Queue()
         self.env_to_d = Queue()
-
-        #Manager
-
 
 
     def start(self):
@@ -72,6 +81,7 @@ class EnvProcess:
         ).start()
 
         self.schedule_random_drought()
+        self.schedule_message_queue()
 
         while self.serve:
             time.sleep(1)
@@ -146,4 +156,5 @@ class EnvProcess:
 
 
     def cleanup(self):
+        self.manager.shutdown()
         self.server_socket.close()
