@@ -108,7 +108,7 @@ def ui_loop(state: DisplayState) -> None:
 
 
 
-        time.sleep(0.1)
+        time.sleep(2)
 
 
 def poll_env_messages(state: DisplayState) -> None:
@@ -133,7 +133,7 @@ def handle_env_message(state: DisplayState, msg: dict) -> None:
     """
 
     state.last_snapshot = msg
-    print(f"[Display] Etat reçu: {msg}")
+    
 
 def read_user_command() -> Optional[str]:
     """
