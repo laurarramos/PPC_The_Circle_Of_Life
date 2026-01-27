@@ -1,8 +1,15 @@
 import cmd
 import time
 import sys
+import threading 
 from typing import Any, Optional, Dict
 from queue import Empty 
+
+from multiprocessing.managers import BaseManager
+
+HOST = "localhost"
+MANAGER_PORT = 50000
+AUTHKEY = b"llave"
 
 
 
@@ -28,6 +35,7 @@ class DisplayState:
         self.running = True
         self.last_snapshot: Optional[Dict[str, Any]] = None  # dernier état reçu depuis env
         self.last_render_time: float = 0.0
+        self.lock = threading.Lock()
 
 
 def display_main() -> None:
@@ -43,12 +51,6 @@ def display_main() -> None:
     finally:
         cleanup(state)
 
-
-from multiprocessing.managers import BaseManager
-
-HOST = "localhost"
-MANAGER_PORT = 50000
-AUTHKEY = b"llave"
 
 def init_ipc() -> DisplayState:
     """
@@ -75,40 +77,67 @@ def init_ipc() -> DisplayState:
     # Créer et retourner l'objet DisplayState
     return DisplayState(mq_to_env=q_to_env, mq_from_env=q_from_env, refresh_period=0.5)
 
+def communication_thread(state: DisplayState) -> None:
+    """
+    Thread de communication avec env.
+
+    Gère l'envoi et la réception des messages via les files de messages.
+    """
+    try: 
+        while state.running:
+            poll_env_messages(state)
+            time.sleep(0.1)  
+            if not state.running:
+                break
+    except Exception as e:
+        print(f"[ERROR] Communication thread: {e}")
+        state.running = False
+
+            
+
+def display_thread(state: DisplayState) -> None:
+    """
+    Thread d'affichage et de gestion de l'interface utilisateur.
+    """
+    try:
+        while state.running:
+            with state.lock:
+                # Affiche l'état actuel périodiquement
+                if state.last_snapshot and (time.time() - state.last_render_time) >= state.refresh_period:
+                    print(f"[Display] Etat actuel: {state.last_snapshot}")
+                    state.last_render_time = time.time()
+
+                # Lit et traite l'entrée utilisateur (non bloquante)
+                user_cmd = read_user_command()
+                if user_cmd:
+                    command_msg = parse_command(user_cmd)
+                    if command_msg:
+                        send_command_to_env(state, command_msg)
+                    if user_cmd.strip().lower() == "stop":
+                        state.running = False
+
+
+            time.sleep(0.1)
+            if not state.running:
+                break
+    except Exception as e:
+        print(f"[ERROR] Display thread: {e}")
+        state.running = False
 
 
 def ui_loop(state: DisplayState) -> None:
     """
-    Boucle principale du display.
-
-    À chaque itération :
-    - récupère et traite les messages en provenance de env,
-    - lit et traite l'entrée utilisateur,
-    - rafraîchit l'affichage périodiquement,
-    - envoie les commandes correspondantes à env via la file de messages.
+    Boucle principale du display, lance les threads.
     """
-    while state.running:
-        
-        poll_env_messages(state)
+    comm_thread = threading.Thread(target=communication_thread, args=(state,), daemon=True)
+    disp_thread = threading.Thread(target=display_thread, args=(state,), daemon=True)
 
-        #Affiche l'état actuel périodiquement
-        if state.last_snapshot and (time.time() - state.last_render_time) >= state.refresh_period:
-            print(f"[Display] Etat actuel: {state.last_snapshot}")
-            state.last_render_time = time.time()
+    comm_thread.start()
+    disp_thread.start()
 
-        # Lit et traite l'entrée utilisateur (non bloquante)
-        user_cmd = read_user_command()
-        if user_cmd:
-            command_msg = parse_command(user_cmd)
-            if command_msg:
-                send_command_to_env(state, command_msg)
-            if user_cmd.strip().lower() == "stop":
-                state.running = False
-
-
-
-
-        time.sleep(2)
+    # Attend la fin des threads
+    comm_thread.join()
+    disp_thread.join()
 
 
 def poll_env_messages(state: DisplayState) -> None:
@@ -132,7 +161,8 @@ def handle_env_message(state: DisplayState, msg: dict) -> None:
     Met à jour l'état interne en conséquence.
     """
 
-    state.last_snapshot = msg
+    with state.lock:
+        state.last_snapshot = msg
     
 
 def read_user_command() -> Optional[str]:
