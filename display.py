@@ -3,236 +3,154 @@ import time
 import sys
 import threading 
 from typing import Any, Optional, Dict
-from queue import Empty 
+from queue import Empty
 
+
+from PySide6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout, QSpinBox)
+from PySide6.QtCore import QThread, Signal, Slot
 from multiprocessing.managers import BaseManager
 
 HOST = "localhost"
 MANAGER_PORT = 50000
 AUTHKEY = b"llave"
 
+class EnvManager(BaseManager):
+    pass
+
+EnvManager.register("get_d_to_env")
+EnvManager.register("get_env_to_d")
 
 
-class DisplayState:
+class CommWorker(QThread):
     """
-    Gère l'affichage de l'état global de la simulation et la communication avec l'utilisateur
+    Thread dédié à la réception des messages depuis env.
+    Communique avec l'UI via des signaux Qt.
 
     """
+    data_received = Signal(dict)  # Signal pour envoyer le dictionnaire d'état à l'UI
 
-    def __init__(self, mq_to_env: Any, mq_from_env: Any, refresh_period: float = 0.5) -> None:
-        """
-        Initialise l'état du display.
+    def __init__(self,mq_from_env):
+        super().__init__()
+        self.mq_from_env = mq_from_env
+        self.running = True
 
-        Args:
-            mq_to_env: File de messages (proxy manager) pour envoyer des commandes vers env.
-            mq_from_env: File de messages (proxy manager) pour recevoir des messages provenant de env.
-            refresh_period: Période (en secondes) entre deux rafraîchissements d'affichage.
+    def run(self):
         """
+        Boucle de lecture de la file de messages.
+        """
+        while self.running:
+            try:
+                msg = self.mq_from_env.get(timeout=0.1)  
+    
+                self.data_received.emit(msg)  # Envoie vers le thread principal
+            except Empty:
+                continue  
+            except Exception as e:
+                print(f"[Thread CommWorker] Erreur: {e}")
+                break 
+
+    def stop(self):
+        self.running = False
+
+
+class DisplayWindow(QWidget):
+    """
+    Interface graphique tournant dans le thread principal.
+    """
+    def __init__(self, mq_to_env: Any, mq_from_env:Any):
+        super().__init__()
         self.mq_to_env = mq_to_env
         self.mq_from_env = mq_from_env
-        self.refresh_period = refresh_period
 
-        self.running = True
-        self.last_snapshot: Optional[Dict[str, Any]] = None  # dernier état reçu depuis env
-        self.last_render_time: float = 0.0
-        self.lock = threading.Lock()
+        self.init_ui()
 
+        self.comm_thread = CommWorker(self.mq_from_env)
+        self.comm_thread.data_received.connect(self.update_data) #Connexion du signal     
+        self.comm_thread.start()
 
-def display_main() -> None:
-    """
-    Point d'entrée du processus display.
+    def init_ui(self):
+        self.setWindowTitle("Simulation - The Circle of Life")
+        self.resize(400, 250)
+        layout = QVBoxLayout()
 
-    Initialise les mécanismes IPC, puis lance la boucle principale d'affichage
-    et de contrôle utilisateur.
-    """
-    state = init_ipc()
-    try:
-        ui_loop(state)
-    finally:
-        cleanup(state)
+        self.status_label = QLabel("Attente du premier snapshot...")
+        self.status_label.setStyleSheet("padding: 15px; background: #f0f0f0; border-radius: 5px;")
+        layout.addWidget(self.status_label)
 
+        # Ajout des contrôles
+        layout.addLayout(self.create_control_row("Herbe:", "SET_GRASS"))
 
-def init_ipc() -> DisplayState:
-    """
-    Initialise et attache les mécanismes IPC nécessaires au display.
-    Se connecte directement au manager pour récupérer les files de messages.
+        self.stop_btn = QPushButton("ARRÊTER")
+        self.stop_btn.clicked.connect(self.close_application)
+        layout.addWidget(self.stop_btn)
 
-    Returns:
-        Un objet DisplayState initialisé.
-    """
-    class EnvManager(BaseManager):
-        pass
+        self.setLayout(layout)
 
-    EnvManager.register("get_d_to_env")
-    EnvManager.register("get_env_to_d")
+    def create_control_row(self, label_text: str, cmd: str):
+        row = QHBoxLayout()
+        spin = QSpinBox()
+        spin.setRange(0, 500)
+        btn = QPushButton("Appliquer")
+        btn.clicked.connect(lambda: self.mq_to_env.put({"cmd": cmd, "value": spin.value()}))
+        row.addWidget(QLabel(label_text))
+        row.addWidget(spin)
+        row.addWidget(btn)
+        return row
+    
+    @Slot(dict)
+    def update_data(self, msg):
+        """Transforme le dictionnaire en une liste HTML."""
+        html_text = "<div style='font-family: Arial; font-size: 14px;'>"
+        html_text += "<h3 style='color: #2c3e50; margin-bottom: 10px;'>État de la Simulation</h3>"
+        html_text += "<ul style='list-style-type: none; padding-left: 0;'>"
+        for key, value in msg.items():
+            label = key.replace("_", " ").capitalize()
+            html_text += f"""
+                <li style='padding: 5px 0; border-bottom: 1px solid #eee;'>
+                    <b style='color: #2980b9;'>{label} :</b> 
+                    <span style='float: right; color: #27ae60; font-weight: bold;'>{value}</span>
+                </li>
+                """
+        html_text += "</ul></div>"
+        self.status_label.setText(html_text)
 
-
-    manager = EnvManager(address=(HOST, MANAGER_PORT), authkey=AUTHKEY)
-    manager.connect()
-
-    # Récupère les files de messages
-    q_to_env = manager.get_d_to_env()
-    q_from_env = manager.get_env_to_d()
-
-    # Créer et retourner l'objet DisplayState
-    return DisplayState(mq_to_env=q_to_env, mq_from_env=q_from_env, refresh_period=0.5)
-
-def communication_thread(state: DisplayState) -> None:
-    """
-    Thread de communication avec env.
-
-    Gère l'envoi et la réception des messages via les files de messages.
-    """
-    try: 
-        while state.running:
-            poll_env_messages(state)
-            time.sleep(0.1)  
-            if not state.running:
-                break
-    except Exception as e:
-        print(f"[ERROR] Communication thread: {e}")
-        state.running = False
-
+    def close_application(self):
+            """Envoie STOP et ferme la fenêtre."""
+            try:
+                self.mq_to_env.put({"cmd": "STOP"})
+            except:
+                pass
+            self.close()
             
+    def closeEvent(self, event):
+            """Assure la fermeture propre du thread."""
+            self.comm_thread.stop()
+            self.comm_thread.wait()
+            super().closeEvent(event)
 
-def display_thread(state: DisplayState) -> None:
+def display_main():
     """
-    Thread d'affichage et de gestion de l'interface utilisateur.
+    Point d'entrée du processus display, utilise l'application Qt.
     """
-    try:
-        while state.running:
-            with state.lock:
-                # Affiche l'état actuel périodiquement
-                if state.last_snapshot and (time.time() - state.last_render_time) >= state.refresh_period:
-                    print(f"[Display] Etat actuel: {state.last_snapshot}")
-                    state.last_render_time = time.time()
+    app = QApplication(sys.argv)
 
-                # Lit et traite l'entrée utilisateur (non bloquante)
-                user_cmd = read_user_command()
-                if user_cmd:
-                    command_msg = parse_command(user_cmd)
-                    if command_msg:
-                        send_command_to_env(state, command_msg)
-                    if user_cmd.strip().lower() == "stop":
-                        state.running = False
+    try: 
+        manager = EnvManager(address=(HOST, MANAGER_PORT), authkey=AUTHKEY)
+        manager.connect()
+        mq_to_env = manager.get_d_to_env()
+        mq_from_env = manager.get_env_to_d()
 
+        window = DisplayWindow(mq_to_env, mq_from_env)
+        window.show()
 
-            time.sleep(0.1)
-            if not state.running:
-                break
+        sys.exit(app.exec())
     except Exception as e:
-        print(f"[ERROR] Display thread: {e}")
-        state.running = False
-
-
-def ui_loop(state: DisplayState) -> None:
-    """
-    Boucle principale du display, lance les threads.
-    """
-    comm_thread = threading.Thread(target=communication_thread, args=(state,), daemon=True)
-    disp_thread = threading.Thread(target=display_thread, args=(state,), daemon=True)
-
-    comm_thread.start()
-    disp_thread.start()
-
-    # Attend la fin des threads
-    comm_thread.join()
-    disp_thread.join()
-
-
-def poll_env_messages(state: DisplayState) -> None:
-    """
-    Récupère tous les messages disponibles depuis `mq_from_env` sans bloquer,
-    et traite chacun d'eux.
-
-    Met à jour l'état interne (last_snapshot) lorsque des status sont reçus.
-    """
-    while True:
-        try:
-            msg = state.mq_from_env.get_nowait() #Non bloquant
-            handle_env_message(state, msg)
-        except Empty: # queue vide
-            break  
-
-
-def handle_env_message(state: DisplayState, msg: dict) -> None: 
-    """
-    Traite les messages reçu depuis env.
-    Met à jour l'état interne en conséquence.
-    """
-
-    with state.lock:
-        state.last_snapshot = msg
-    
-
-def read_user_command() -> Optional[str]:
-    """
-    Lit une commande utilisateur.
-
-    Returns:
-        La commande saisie (str) ou None si aucune entrée.
-    """
-    import select
-    if select.select([sys.stdin], [], [], 0.0)[0]:
-        return sys.stdin.readline().strip()     
-    return None
-
-
-def parse_command(cmd: str) -> Optional[dict]:
-    """
-    Analyse une commande textuelle et renvoie un dictionnaire de commande.
-    """
-    parts = cmd.split()
-    if not parts:
-        return None
-
-    try:
-        if parts[0] == "set":
-            if len(parts) < 3:
-                return None
-            value = int(parts[2])
-            if parts[1] == "grass":
-                return {"cmd": "SET_GRASS", "value": value}
-            elif parts[1] == "preys":
-                return {"cmd": "SET_PREYS", "value": value}
-            elif parts[1] == "predators":
-                return {"cmd": "SET_PREDATORS", "value": value}
-        elif parts[0] == "stop":
-            return {"cmd": "STOP"}
-    except (IndexError, ValueError):
-        return None
-
-    return None
-
-        
-    
-def send_command_to_env(state: DisplayState, command_msg: dict) -> None:
-    """
-    Envoie une commande à env via mq_to_env.
-
-    Args:
-        command_msg: Dictionnaire représentant la commande (ex: {"cmd": "SET", ...}).
-    """
-    state.mq_to_env.put(command_msg)
-
-
-def request_stop(state: DisplayState) -> None:
-    """
-    Déclenche l'arrêt côté display : envoie STOP à env et quitte la boucle UI.
-    """
-    send_command_to_env(state, {"cmd": "STOP"})
-    state.running = False
-
-
-def cleanup(state: DisplayState) -> None:
-    """
-    Libère proprement les ressources utilisées par le display.
-
-    (Avec un manager, on se contente généralement de quitter proprement.
-    Les queues/manager seront arrêtés côté env.)
-    """
-    print("[Display] Exiting cleanly...")
+        print(f"[Display] Erreur de connexion au manager: {e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
     display_main()
+
+
+    
