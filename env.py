@@ -1,10 +1,12 @@
 import os
+import sys
 import random
 import threading
 import socket
 import signal
 import time
 import json
+import subprocess
 from multiprocessing import Semaphore, Manager
 from multiprocessing.managers import BaseManager
 
@@ -36,10 +38,12 @@ class EnvProcess:
             "nb_preys": 0,
             "pid_preys_active": [],
             "nb_predators": 0,
+            "waiting_prey_pid": None,
+            "waiting_predator_pid": None,
             "H": 30,
-            "R": 80,
+            "R": 120,
             "drought": False,
-            "energy_decay": 1,
+            "energy_decay": 2,
             "serve": True 
         })
 
@@ -89,6 +93,8 @@ class EnvProcess:
             while self.shared_state["serve"]:
                 if not self.shared_state["drought"]:
                     self.grass_growth()
+                else:
+                    time.sleep(3)
         except:
             pass
             
@@ -200,23 +206,37 @@ class EnvProcess:
 
     def client_message(self, client_socket):
         """
-        Met à jour les états partagés en fonction des messages écoutés dans la socket.
+        Gère les messages des individus (JOIN et REPRODUCE).
         """
         with client_socket:
             while self.shared_state["serve"]:
-                data = client_socket.recv(1024).decode().strip()
-                try: 
+                try:
+                    data = client_socket.recv(1024).decode().strip()
+                    if not data: break
                     message = json.loads(data)
-                    if message.get("role")=="prey":
+                    
+                    msg_type = message.get("type")
+                    role = message.get("role")
+
+                    # Cas 1 : Connexion initiale
+                    if msg_type == "join":
                         with self.sem_mutex:
-                            self.shared_state["nb_preys"] += 1
-                    if message.get("role")=="predator":
-                        with self.sem_mutex:
-                            self.shared_state["nb_predators"] += 1
-                except json.JSONDecodeError:
-                    print(f"[EnvProcess] Message JSON invalide reçu: {data}")
+                            if role == "prey": self.shared_state["nb_preys"] += 1
+                            if role == "predator": self.shared_state["nb_predators"] += 1
+                        print(f"[Env] {role} PID {message.get('pid')} a rejoint.")
+
+                    # Cas 2 : Reproduction (Naissance)
+                    elif msg_type == "reproduce":
+                        print(f"[Env] Reproduction : Création d'un nouveau {role}")
+                        if role == "prey":
+                            subprocess.Popen([sys.executable, "prey.py"])
+                        elif role == "predator":
+                            subprocess.Popen([sys.executable, "predator.py"])
+
+                except (json.JSONDecodeError, BrokenPipeError):
+                    break
                 except Exception as e:
-                    print(f"[EnvProcess] Erreur inattendue {e}")
+                    print(f"[Env] Erreur client: {e}")
 
     def cleanup(self):
         print("[EnvProcess] Nettoyage des ressources...")

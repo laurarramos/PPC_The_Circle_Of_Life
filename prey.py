@@ -12,10 +12,10 @@ MANAGER_HOST = 'localhost'
 MANAGER_PORT = 50000
 AUTHKEY = b"llave"
 
-TICK_SLEEP_DEFAULT = 0.2  
+TICK_SLEEP_DEFAULT = 1.5  
 INITIAL_ENERGY = 100.0
 ENERGY_GAIN_FROM_GRASS = 10.0
-REPRODUCTION_COST = 5.0
+REPRODUCTION_COST = 30.0
 
 # Manager client
 class EnvManager(BaseManager):
@@ -114,6 +114,37 @@ def check_if_eaten(state) -> bool:
         state["sem_mutex"].release()
     return eaten
 
+def try_reproduce(state) -> bool:
+    """
+    Logique de reproduction sexuée via la mémoire partagée.
+    Gère le rdv entre deux prédateurs prêts à se reproduire et la perte d'énergie.
+    """
+    state["sem_mutex"].acquire()
+    try :
+        partner_pid = state["shared_state"].get("waiting_prey_pid")
+
+        if partner_pid is None:
+            # Cas 1 : Je suis le premier. Je paie et je m'inscris.
+            state["energy"] -= REPRODUCTION_COST
+            state["shared_state"].update({"waiting_prey_pid": state["pid"]})
+            print(f"[PREY {state['pid']}] Premier parent : Energie déduite, en attente...")
+            return False
+            
+        elif partner_pid != state["pid"]:
+            # Cas 2 : Je trouve quelqu'un. Je paie et je déclenche la naissance.
+            state["shared_state"].update({"waiting_prey_pid": None})
+            state["energy"] -= REPRODUCTION_COST
+            send_json(state["socket"], {"type": "reproduce", "role": "prey", "pid": state["pid"]})
+            print(f"[PREY {state['pid']}] Second parent : Energie déduite, bébé né avec {partner_pid} !")
+            return True
+        
+        else:
+                # On est tombé sur soi-même, on attend
+                return False
+    finally:
+        # On libère le mutex dans tous les cas
+        state["sem_mutex"].release()
+
 def main_loop(state) -> None:
     """
     Boucle de simulation principale de la proie 
@@ -125,39 +156,42 @@ def main_loop(state) -> None:
         tick += 1
         params = state["shared_state"]
 
-        # vérification si la simulation doit s'arrêter (demandé par display)
+        # 1. Vérification si la simulation doit s'arrêter (demandé par display)
         if not params.get("serve", True):
             print(f"[Prey {state['pid']}] Global stop received.")
             alive = False
             continue
+        
+        # 2. Vérif si la proie a été mangée
+        if check_if_eaten(state):
+            print(f"[Prey {state['pid']}] Was eaten by a predator")
+            alive = False
+            state["active"] = False
 
-        # Récupération des seuils depuis la mémoire partagée
+        # 3. Récupération des seuils depuis la mémoire partagée
         h_threshold = params.get("H")
         r_threshold = params.get("R")
         energy_decay = params.get("energy_decay")
 
-        # Décrémentation de l'énergie
+        # 4. Métabolisme : diminution régulière de l'énergie
         state["energy"] -= energy_decay
         print(f"[Prey {state['pid']}] Tick {tick}: Energy = {state['energy']:.1f} (decay: {energy_decay})")
 
+        # 5. La proie signale sa présence si elle est en bonne santé (énergie > H)
         update_visibility(state, h_threshold)
 
+        # 6. Manger de l'herbe si possible
         if state["active"]:
             if state["sem_grass"].acquire(blocking=False):
                 state["energy"] += ENERGY_GAIN_FROM_GRASS
                 print(f"[Prey {state['pid']}] Ate grass, energy now: {state['energy']:.1f}")
         
-        if check_if_eaten(state):
-            print(f"[Prey {state['pid']}] Was eaten by a predator")
-            alive = False
-            state["active"] = False
-        
+        # 7. Reproduction (énergie > R)
         if alive and state["energy"] > r_threshold:
-            # demande de reproduction
-            print(f"[Prey {state['pid']}] Ready to reproduce! (energy > {r_threshold})")
-            state["energy"] -= REPRODUCTION_COST
-            send_json(state["socket"], {"type": "reproduce", "role": "prey", "pid": state["pid"]})
+            print(f"[Prey {state['pid']}] Ready to reproduce!")
+            try_reproduce(state)
 
+        # 8. Condition de mort naturelle
         if state["energy"] <= 0:
             print(f"[Prey {state['pid']}] Died of hunger")
             alive = False
@@ -168,17 +202,34 @@ def main_loop(state) -> None:
 def cleanup(state) -> None:
     """
     Libère les ressources et met à jour la mémoire partagée.
+    Gère le retrait des listes actives et des listes d'attente de reproduction.
     """
     print(f"[Prey {state['pid']}] Cleanup: removing myself from shared state")
-    # on se retire de la liste des proies actives si besoin
+    
+    # 1. On se retire de la liste des proies actives (chassables)
     withdraw_from_list(state)
 
-    # mise à jourdu compteur global de proies
+    # 2. Utilisation de try...finally pour garantir la libération du mutex
     state["sem_mutex"].acquire()
-    current_nb = state["shared_state"].get("nb_preys", 0)
-    state["shared_state"].update({"nb_preys": max(0, current_nb - 1)})
-    state["sem_mutex"].release()
-    # fermeture de la socket
+    try:
+        # Mise à jour du compteur global de proies
+        current_nb = state["shared_state"].get("nb_preys", 0)
+        state["shared_state"].update({"nb_preys": max(0, current_nb - 1)})
+
+        # NETTOYAGE REPRODUCTION : Si j'attendais un partenaire, je libère la place
+        # Si je meurs alors que j'attendais un partenaire (mon PID est dans la liste d'attente)
+        if state["shared_state"].get("waiting_prey_pid") == state["pid"]:
+            state["shared_state"].update({"waiting_prey_pid": None})
+            print(f"[Prey {state['pid']}] Cleared from waiting list (energy was already spent).")
+            
+    except Exception as e:
+        print(f"[Prey {state['pid']}] Error during cleanup: {e}")
+        
+    finally:
+        # On libère le mutex quoi qu'il arrive (évite les deadlocks)
+        state["sem_mutex"].release()
+
+    # 3. Fermeture de la socket de communication
     state["socket"].close()
 
 
