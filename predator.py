@@ -14,7 +14,7 @@ MANAGER_PORT = 50000
 AUTHKEY = b"llave"
 
 TICK_SLEEP_DEFAULT = 1.5
-INITIAL_ENERGY = 100.0
+INITIAL_ENERGY = 50.0
 ENERGY_GAIN_FROM_PREY = 20.0
 REPRODUCTION_COST = 30.0
 
@@ -191,7 +191,7 @@ def cleanup(state) -> None:
             
     except Exception as e:
         print(f"[Predator {state['pid']}] Error during cleanup: {e}")
-        
+
     finally:
         # Libération systématique du mutex pour éviter les deadlocks
         state["sem_mutex"].release()
