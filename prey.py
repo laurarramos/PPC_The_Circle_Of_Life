@@ -43,7 +43,7 @@ def init_ipc() -> dict:
     print("[Init] Connecting to manager...")
     mgr = EnvManager(address=(MANAGER_HOST, MANAGER_PORT), authkey=AUTHKEY)
     mgr.connect()
-    print("[Init] Manager connected ✓")
+    print("[Init] Manager connected")
 
     print("[Init] Connecting to environment socket...")
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -167,6 +167,7 @@ def main_loop(state) -> None:
             print(f"[Prey {state['pid']}] Was eaten by a predator")
             alive = False
             state["active"] = False
+            continue
 
         # 3. Récupération des seuils depuis la mémoire partagée
         h_threshold = params.get("H")
@@ -185,6 +186,10 @@ def main_loop(state) -> None:
             if state["sem_grass"].acquire(blocking=False):
                 state["energy"] += ENERGY_GAIN_FROM_GRASS
                 print(f"[Prey {state['pid']}] Ate grass, energy now: {state['energy']:.1f}")
+
+                # vérification immédiate après manger
+                if state["energy"] >= h_threshold:
+                    withdraw_from_list(state)
         
         # 7. Reproduction (énergie > R)
         if alive and state["energy"] > r_threshold:
