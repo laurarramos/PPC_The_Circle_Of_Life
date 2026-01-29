@@ -174,6 +174,3 @@ def display_main():
 
 if __name__ == "__main__":
     display_main()
-
-
-    
