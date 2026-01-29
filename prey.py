@@ -218,12 +218,13 @@ def cleanup(state) -> None:
     state["sem_mutex"].acquire()
     try:
         # Mise à jour du compteur global de proies
-        current_nb = state["shared_state"].get("nb_preys", 0)
+        current_data = state["shared_state"].copy()
+        current_nb = current_data.get("nb_preys", 0)
         state["shared_state"].update({"nb_preys": max(0, current_nb - 1)})
 
         # NETTOYAGE REPRODUCTION : Si j'attendais un partenaire, je libère la place
         # Si je meurs alors que j'attendais un partenaire (mon PID est dans la liste d'attente)
-        if state["shared_state"].get("waiting_prey_pid") == state["pid"]:
+        if current_data.get("waiting_prey_pid") == state["pid"]:
             state["shared_state"].update({"waiting_prey_pid": None})
             print(f"[Prey {state['pid']}] Cleared from waiting list (energy was already spent).")
             
