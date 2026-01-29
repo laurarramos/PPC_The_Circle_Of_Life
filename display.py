@@ -124,7 +124,7 @@ class DisplayWindow(QWidget):
     @Slot(dict)
     def update_data(self, msg):
         html_text = "<div style='font-family: Arial; font-size: 14px;'>"
-        html_text += "<h3 style='color: #2c3e50; margin-bottom: 10px;'>État de la Simulation</h3>"
+        html_text += "<h3 style='color: #2c3e50; margin-bottom: 10px;'>Simulation status</h3>"
         html_text += "<ul style='list-style-type: none; padding-left: 0;'>"
         
         
