@@ -34,14 +34,14 @@ class EnvProcess:
 
         # définition de la mémoire partagée comme un dictionnaire
         self.shared_state = self.internal_manager.dict({
-            "grass": 100,
+            "grass": 0,
             "nb_preys": 0,
             "pid_preys_active": [],
             "nb_predators": 0,
             "waiting_prey_pid": None,
             "waiting_predator_pid": None,
-            "H": 30,
-            "R": 120,
+            "H": 0,
+            "R": 0,
             "drought": False,
             "energy_decay": 2,
             "serve": True 
@@ -76,7 +76,7 @@ class EnvProcess:
 
     def start(self):
         self.manager_server.start()
-        print("[EnvProcess] Manager server démarré.")
+        print("[EnvProcess] Manager server started.")
 
         threading.Thread(target=self.handle_connections, daemon=True).start()
 
@@ -86,8 +86,8 @@ class EnvProcess:
 
         self.schedule_random_drought()
 
-        print(f"[Env] Serveur Socket écoute sur {PORT}")
-        print("[Env] Simulation en cours...")
+        print(f"[Env] Serveur Socket listen on {PORT}")
+        print("[Env] Simulation in progress...")
 
         try:
             while self.shared_state["serve"]:
@@ -107,7 +107,7 @@ class EnvProcess:
         """
         Augmente la quantité d'herbe dans l'environnement.
         """
-        #doit modifier sem_grass puis shared_state.grass
+        # Doit modifier sem_grass puis shared_state.grass
         with self.sem_mutex:
             self.shared_state["grass"] += 1
             self.sem_grass.release()
@@ -122,14 +122,24 @@ class EnvProcess:
                 command_msg = self.d_to_env.get(timeout=0.1)
                 if command_msg.get("cmd") == "SET_GRASS":
                     with self.sem_mutex:
-                        self.shared_state["grass"] = command_msg["value"]
-                        self.sem_grass = Semaphore(self.shared_state["grass"])
-                elif command_msg.get("cmd") == "SET_PREYS":
+                        old_grass = self.shared_state["grass"]
+                        new_grass = command_msg["value"]
+                        diff = new_grass - old_grass
+                        
+                        if diff > 0:
+                            for _ in range(diff):
+                                self.sem_grass.release() # Ajout d'herbe
+                        elif diff < 0:
+                            for _ in range(abs(diff)):
+                                self.sem_grass.acquire(blocking=False) # Retrait d'herbe
+                        self.shared_state["grass"] = new_grass
+
+                elif command_msg.get("cmd") == "SET_H":
                     with self.sem_mutex:
-                        self.shared_state["nb_preys"] = command_msg["value"]
-                elif command_msg.get("cmd") == "SET_PREDATORS":
+                        self.shared_state["H"] = command_msg["value"]
+                elif command_msg.get("cmd") == "SET_R":
                     with self.sem_mutex:
-                        self.shared_state["nb_predators"] = command_msg["value"]
+                        self.shared_state["R"] = command_msg["value"]
                 elif command_msg.get("cmd") == "STOP":
                     self.shared_state["serve"] = False  # Met à jour shared_state.serve
             except Exception:
@@ -171,7 +181,7 @@ class EnvProcess:
             os.kill(os.getpid(), signal.SIGUSR1)
 
     def drought_handler(self, signum, frame):
-        print("\n!!! SÉCHERESSE DÉCLENCHÉE !!!")
+        print("\nDrought triggered!")
         with self.sem_mutex:
             self.shared_state["drought"] = True
             
@@ -186,7 +196,7 @@ class EnvProcess:
         threading.Timer(5, self.end_drought).start()
 
     def end_drought(self):
-        print("+++ SÉCHERESSE TERMINÉE +++\n")
+        print("Drought ended.\n")
         with self.sem_mutex:
             self.shared_state["drought"] = False
         self.schedule_random_drought()
@@ -201,7 +211,7 @@ class EnvProcess:
                     daemon=True
                 ).start()
             except Exception as e:
-                print(f"[EnvProcess] Erreur dans handle_connections: {e}")
+                print(f"[EnvProcess] Error in handle_connections: {e}")
                 time.sleep(1)  
 
     def client_message(self, client_socket):
@@ -227,7 +237,7 @@ class EnvProcess:
 
                     # Cas 2 : Reproduction (Naissance)
                     elif msg_type == "reproduce":
-                        print(f"[Env] Reproduction : Création d'un nouveau {role}")
+                        print(f"[Env] Reproduction : Creation of a new {role}")
                         if role == "prey":
                             subprocess.Popen([sys.executable, "prey.py"])
                         elif role == "predator":
@@ -236,10 +246,9 @@ class EnvProcess:
                 except (json.JSONDecodeError, BrokenPipeError):
                     break
                 except Exception as e:
-                    print(f"[Env] Erreur client: {e}")
-
+                    print(f"[Env] Error client: {e}")
     def cleanup(self):
-        print("[EnvProcess] Nettoyage des ressources...")
+        print("[EnvProcess] Cleaning up resources...")
         self.shared_state["serve"] = False
         self.server_socket.close()
 
@@ -248,5 +257,5 @@ class EnvProcess:
 
 if __name__ == "__main__":
     env = EnvProcess()
-    print("[Main] Démarrage de l'environnement...")
+    print("[Main] Starting the environment...")
     env.start()

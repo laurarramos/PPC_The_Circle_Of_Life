@@ -4,6 +4,7 @@ import sys
 import threading 
 from typing import Any, Optional, Dict
 from queue import Empty
+import subprocess 
 
 
 from PySide6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QLabel, QPushButton, QHBoxLayout, QSpinBox)
@@ -46,7 +47,7 @@ class CommWorker(QThread):
             except Empty:
                 continue  
             except Exception as e:
-                print(f"[Thread CommWorker] Erreur: {e}")
+                print(f"[Thread CommWorker] Error: {e}")
                 break 
 
     def stop(self):
@@ -70,17 +71,32 @@ class DisplayWindow(QWidget):
 
     def init_ui(self):
         self.setWindowTitle("Simulation - The Circle of Life")
-        self.resize(400, 250)
+        self.resize(600, 400)
         layout = QVBoxLayout()
 
-        self.status_label = QLabel("Attente du premier snapshot...")
+        self.status_label = QLabel("Waiting for the first snapshot...")
         self.status_label.setStyleSheet("padding: 15px; background: #f0f0f0; border-radius: 5px;")
         layout.addWidget(self.status_label)
 
         # Ajout des contrôles
-        layout.addLayout(self.create_control_row("Herbe:", "SET_GRASS"))
+        layout.addLayout(self.create_control_row("Grass:", "SET_GRASS"))
+        layout.addLayout(self.create_control_row("Treshold of reproduction R:", "SET_R"))
+        layout.addLayout(self.create_control_row("Treshold of hunger H:", "SET_H"))
 
-        self.stop_btn = QPushButton("ARRÊTER")
+        row_add = QHBoxLayout()
+        self.add_prey_btn = QPushButton(" + Add Prey ")
+        self.add_pred_btn = QPushButton(" + Add Predator ")
+        
+        # Lancement du processus par display.py
+        self.add_prey_btn.clicked.connect(self.spawn_prey)
+        self.add_pred_btn.clicked.connect(self.spawn_predator)
+        
+        row_add.addWidget(self.add_prey_btn)
+        row_add.addWidget(self.add_pred_btn)
+        layout.addLayout(row_add)
+
+
+        self.stop_btn = QPushButton("STOP SIMULATION")
         self.stop_btn.clicked.connect(self.close_application)
         layout.addWidget(self.stop_btn)
 
@@ -90,13 +106,20 @@ class DisplayWindow(QWidget):
         row = QHBoxLayout()
         spin = QSpinBox()
         spin.setRange(0, 500)
-        btn = QPushButton("Appliquer")
+        btn = QPushButton("Apply")
         btn.clicked.connect(lambda: self.mq_to_env.put({"cmd": cmd, "value": spin.value()}))
         row.addWidget(QLabel(label_text))
         row.addWidget(spin)
         row.addWidget(btn)
         return row
-    
+    def spawn_prey(self):
+        """Lance un nouveau processus proie."""
+        subprocess.Popen([sys.executable, "prey.py"])
+
+    def spawn_predator(self):
+        """Lance un nouveau processus prédateur."""
+        subprocess.Popen([sys.executable, "predator.py"])
+
     @Slot(dict)
     def update_data(self, msg):
         """Transforme le dictionnaire en une liste HTML."""
@@ -145,7 +168,7 @@ def display_main():
 
         sys.exit(app.exec())
     except Exception as e:
-        print(f"[Display] Erreur de connexion au manager: {e}")
+        print(f"[Display] Connection error to the manager: {e}")
         sys.exit(1)
 
 
