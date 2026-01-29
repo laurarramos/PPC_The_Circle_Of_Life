@@ -120,20 +120,32 @@ class DisplayWindow(QWidget):
         """Lance un nouveau processus prédateur."""
         subprocess.Popen([sys.executable, "predator.py"])
 
+
     @Slot(dict)
     def update_data(self, msg):
-        """Transforme le dictionnaire en une liste HTML."""
         html_text = "<div style='font-family: Arial; font-size: 14px;'>"
         html_text += "<h3 style='color: #2c3e50; margin-bottom: 10px;'>État de la Simulation</h3>"
         html_text += "<ul style='list-style-type: none; padding-left: 0;'>"
+        
+        
         for key, value in msg.items():
             label = key.replace("_", " ").capitalize()
+            
+            if key == "pid_preys_active":
+                label = "Active Preys"
+                display_value = len(value)  # On affiche le nombre d'éléments dans la liste
+            elif isinstance(value, list):
+                display_value = len(value)  # Sécurité pour toute autre liste
+            else:
+                display_value = value
+
+
             html_text += f"""
                 <li style='padding: 5px 0; border-bottom: 1px solid #eee;'>
                     <b style='color: #2980b9;'>{label} :</b> 
-                    <span style='float: right; color: #27ae60; font-weight: bold;'>{value}</span>
+                    <span style='float: right; color: #27ae60; font-weight: bold;'>{display_value}</span>
                 </li>
-                """
+            """
         html_text += "</ul></div>"
         self.status_label.setText(html_text)
 

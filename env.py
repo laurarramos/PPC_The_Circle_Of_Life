@@ -67,6 +67,7 @@ class EnvProcess:
 
         # Socket
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.server_socket.bind((HOST, PORT))
         self.server_socket.listen()
 
@@ -155,6 +156,7 @@ class EnvProcess:
                     state = {
                         "grass": self.shared_state["grass"],
                         "nb_preys": self.shared_state["nb_preys"],
+                        "pid_preys_active": list(self.shared_state["pid_preys_active"]),
                         "nb_predators": self.shared_state["nb_predators"],
                         "drought": self.shared_state["drought"],
                         "H": self.shared_state["H"],
